@@ -1,0 +1,322 @@
+//! Read-only access to a cursor-agent chat store
+//! (`~/.cursor/chats/<md5(cwd)>/<agentId>/store.db`, tables `blobs(id, data)`
+//! and `meta(key, value)`).
+//!
+//! A store is untrusted input: it is opened read-only with defensive SQLite
+//! settings, `blobs` and `meta` must be real tables, and oversized values are
+//! skipped rather than loaded.
+
+use crate::{schema, text};
+use anyhow::{bail, Context, Result};
+use rusqlite::{config::DbConfig, types::ValueRef, Connection, OpenFlags, OptionalExtension};
+use serde::Deserialize;
+use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+/// Parsed `meta` row '0' (hex-encoded JSON). Unknown keys stay in `raw`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaRow {
+    pub agent_id: Option<String>,
+    pub name: Option<String>,
+    pub latest_root_blob_id: Option<String>,
+    pub blob_encryption_key: Option<String>,
+    pub created_at: Option<serde_json::Value>,
+    pub mode: Option<String>,
+    pub last_used_model: Option<String>,
+    #[serde(skip)]
+    pub raw: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlobRow {
+    pub rowid: i64,
+    pub id: String,
+    pub data: Vec<u8>,
+}
+
+pub struct Store {
+    pub path: PathBuf,
+    conn: Connection,
+}
+
+/// Blobs larger than this are never loaded: `scan_rows` yields them with
+/// empty data and `blob` returns an error.
+pub const MAX_BLOB_BYTES: i64 = 64 * 1024 * 1024;
+
+/// Upper bound on the hex-encoded meta value.
+pub const MAX_META_BYTES: i64 = 16 * 1024 * 1024;
+
+fn value_bytes(v: ValueRef<'_>) -> Vec<u8> {
+    match v {
+        ValueRef::Blob(b) | ValueRef::Text(b) => b.to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+/// Defensive settings for a connection to an untrusted database.
+fn harden(conn: &Connection) -> Result<()> {
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    conn.pragma_update(None, "trusted_schema", "OFF")?;
+    conn.pragma_update(None, "query_only", 1)?;
+    Ok(())
+}
+
+impl Store {
+    /// Open read-only, no mutex, 50 ms busy timeout, then harden the
+    /// connection: `SQLITE_DBCONFIG_DEFENSIVE`, `trusted_schema=OFF`,
+    /// `query_only=1`. Fails unless `blobs` and `meta` are real tables (a
+    /// crafted store could define them as views over arbitrary SQL).
+    ///
+    /// Sidecar files: a read-only open does create files in the chat dir.
+    /// For a WAL-mode store with no `-wal`/`-shm` present (writer closed),
+    /// the first query creates both `store.db-wal` (empty) and
+    /// `store.db-shm`, and they remain after the connection closes. With only
+    /// `-wal` present, `-shm` is created. Read-only mode does not stop this:
+    /// the WAL index must exist for any reader. This matches what
+    /// cursor-agent itself leaves while a chat is live. Verified empirically
+    /// with the bundled SQLite (`readonly_open_sidecars` test in
+    /// `tests/store_hardening.rs`).
+    pub fn open(path: impl AsRef<Path>) -> Result<Store> {
+        let path = path.as_ref().to_path_buf();
+        let conn =
+            Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+                .with_context(|| format!("opening {}", path.display()))?;
+        conn.busy_timeout(Duration::from_millis(50))?;
+        harden(&conn).with_context(|| format!("hardening connection to {}", path.display()))?;
+        for table in ["blobs", "meta"] {
+            let kind: Option<String> = conn
+                .query_row("select type from sqlite_master where name=?", [table], |r| r.get(0))
+                .optional()
+                .with_context(|| format!("reading schema of {}", path.display()))?;
+            match kind.as_deref() {
+                Some("table") => {}
+                Some(other) => bail!("{}: `{table}` is a {other}, not a table", path.display()),
+                None => bail!("{}: no `{table}` table; not a cursor-agent store", path.display()),
+            }
+        }
+        Ok(Store { path, conn })
+    }
+
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Raw decoded meta JSON, or an empty map when the row is missing.
+    pub fn meta_json(&self) -> Result<serde_json::Map<String, serde_json::Value>> {
+        let row: Option<(i64, Option<String>)> = self
+            .conn
+            .query_row(
+                "select octet_length(value), case when octet_length(value) <= ?2 then value end \
+                 from meta where key=?1",
+                rusqlite::params![schema::META_KEY, MAX_META_BYTES],
+                |r| Ok((r.get::<_, Option<i64>>(0)?.unwrap_or(0), r.get(1)?)),
+            )
+            .optional()?;
+        let Some((len, hex)) = row else { return Ok(Default::default()) };
+        let Some(hex) = hex else { bail!("meta value is {len} bytes (limit {MAX_META_BYTES})") };
+        let bytes = schema::unhex(&hex).context("meta value is not hex")?;
+        serde_json::from_slice(&bytes).context("meta value is not JSON")
+    }
+
+    pub fn meta(&self) -> Result<MetaRow> {
+        let raw = self.meta_json()?;
+        let mut m: MetaRow =
+            serde_json::from_value(serde_json::Value::Object(raw.clone())).context("unexpected meta shape")?;
+        m.raw = raw;
+        Ok(m)
+    }
+
+    /// Cheap probe for change detection.
+    pub fn latest_root_id(&self) -> Result<Option<String>> {
+        Ok(self.meta()?.latest_root_blob_id)
+    }
+
+    /// Blob data by id; an error when it exceeds [`MAX_BLOB_BYTES`].
+    pub fn blob(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        let row = self
+            .conn
+            .query_row(
+                "select octet_length(data), case when octet_length(data) <= ?2 then data end \
+                 from blobs where id=?1",
+                rusqlite::params![id, MAX_BLOB_BYTES],
+                |r| Ok((r.get::<_, Option<i64>>(0)?.unwrap_or(0), value_bytes(r.get_ref(1)?))),
+            )
+            .optional()?;
+        match row {
+            Some((len, _)) if len > MAX_BLOB_BYTES => bail!("blob {id} is {len} bytes (limit {MAX_BLOB_BYTES})"),
+            Some((_, data)) => Ok(Some(data)),
+            None => Ok(None),
+        }
+    }
+
+    /// Rows with `rowid > after_rowid` in insertion order, collected. Prefer
+    /// [`for_each_row`](Self::for_each_row), which streams.
+    pub fn scan_rows(&self, after_rowid: i64) -> Result<Vec<BlobRow>> {
+        let mut out = Vec::new();
+        self.for_each_row(after_rowid, |r| {
+            out.push(r);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// Stream rows with `rowid > after_rowid` in insertion order, one at a
+    /// time. Rows whose data exceeds [`MAX_BLOB_BYTES`] are passed with empty
+    /// `data` (their content is never read), so callers still see the rowid.
+    pub fn for_each_row(&self, after_rowid: i64, mut f: impl FnMut(BlobRow) -> Result<()>) -> Result<()> {
+        let mut st = self.conn.prepare_cached(
+            "select rowid, id, case when octet_length(data) <= ?2 then data end \
+             from blobs where rowid > ?1 order by rowid",
+        )?;
+        let mut rows = st.query(rusqlite::params![after_rowid, MAX_BLOB_BYTES])?;
+        while let Some(r) = rows.next()? {
+            f(BlobRow { rowid: r.get(0)?, id: r.get(1)?, data: value_bytes(r.get_ref(2)?) })?;
+        }
+        Ok(())
+    }
+
+    pub fn max_rowid(&self) -> Result<i64> {
+        Ok(self.conn.query_row("select coalesce(max(rowid), 0) from blobs", [], |r| r.get(0))?)
+    }
+}
+
+/// Change-detection tuple: WAL size is not monotonic (truncated on checkpoint),
+/// so every component is compared.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WriteStamp {
+    pub db_mtime: Option<SystemTime>,
+    pub wal_mtime: Option<SystemTime>,
+    pub wal_size: Option<u64>,
+    pub shm_mtime: Option<SystemTime>,
+}
+
+impl WriteStamp {
+    /// Python `last_write`: newest of store.db and store.db-wal.
+    pub fn latest(&self) -> Option<SystemTime> {
+        self.db_mtime.max(self.wal_mtime)
+    }
+}
+
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
+pub fn last_write(path: &Path) -> WriteStamp {
+    let md = |p: &Path| std::fs::metadata(p).ok();
+    let db = md(path);
+    let wal = md(&sidecar(path, "-wal"));
+    let shm = md(&sidecar(path, "-shm"));
+    WriteStamp {
+        db_mtime: db.and_then(|m| m.modified().ok()),
+        wal_mtime: wal.as_ref().and_then(|m| m.modified().ok()),
+        wal_size: wal.map(|m| m.len()),
+        shm_mtime: shm.and_then(|m| m.modified().ok()),
+    }
+}
+
+/// `$HOME`, which must be set, non-empty, and absolute. There is no fallback
+/// to `/`: without a home there is no chats dir and no state dir.
+pub fn home() -> Result<PathBuf> {
+    match std::env::var_os("HOME") {
+        Some(h) if !h.is_empty() && Path::new(&h).is_absolute() => Ok(PathBuf::from(h)),
+        Some(h) if !h.is_empty() => bail!("HOME is not an absolute path: {}", Path::new(&h).display()),
+        _ => bail!("HOME is not set"),
+    }
+}
+
+/// `~/.cursor/chats`, or an error when `HOME` is unusable.
+pub fn try_chats_dir() -> Result<PathBuf> {
+    Ok(home()?.join(".cursor/chats"))
+}
+
+/// Infallible form of [`try_chats_dir`] for lookups: without a usable `HOME`
+/// it returns a path under [`NO_HOME`] that never exists, so lookups find
+/// nothing instead of searching `/`.
+pub fn chats_dir() -> PathBuf {
+    try_chats_dir().unwrap_or_else(|_| PathBuf::from(NO_HOME).join(".cursor/chats"))
+}
+
+/// Placeholder root used when `HOME` is unusable. Nothing is ever read from or
+/// written under it: `session::write_atomic` refuses paths below it.
+pub const NO_HOME: &str = "/nonexistent/ctxviz-no-home";
+
+/// `os.path.abspath`: join with the process cwd and normalize lexically.
+pub fn abspath(p: &Path) -> PathBuf {
+    let joined = if p.is_absolute() { p.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(p) };
+    let mut out = PathBuf::from("/");
+    for c in joined.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(s) => out.push(s),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// md5 of the absolute workspace path: the project directory name.
+pub fn project_hash(cwd: &Path) -> String {
+    format!("{:x}", md5::compute(abspath(cwd).as_os_str().as_encoded_bytes()))
+}
+
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect()).unwrap_or_default()
+}
+
+/// `<dir>/*/store.db` that exist.
+fn stores_in(dir: &Path) -> Vec<PathBuf> {
+    subdirs(dir).into_iter().map(|d| d.join("store.db")).filter(|p| p.is_file()).collect()
+}
+
+fn newest(stores: Vec<PathBuf>) -> Option<PathBuf> {
+    stores.into_iter().max_by_key(|p| last_write(p).latest())
+}
+
+/// Store for an exact agent id, searching every project dir. Ids that are not
+/// [`text::valid_id`] (path separators, `..`, leading dot) find nothing; use
+/// [`try_store_for_agent`] for an error that says why.
+pub fn store_for_agent(agent_id: &str) -> Option<PathBuf> {
+    try_store_for_agent(agent_id).ok().flatten()
+}
+
+/// [`store_for_agent`] that rejects an invalid id (or an unusable `HOME`)
+/// with an error.
+pub fn try_store_for_agent(agent_id: &str) -> Result<Option<PathBuf>> {
+    if !text::valid_id(agent_id) {
+        bail!("invalid agent id {agent_id:?}");
+    }
+    Ok(subdirs(&try_chats_dir()?).into_iter().map(|d| d.join(agent_id).join("store.db")).find(|p| p.is_file()))
+}
+
+/// Python `find_store`: explicit path, agent id (glob `*/<id>/store.db`),
+/// newest store anywhere with `latest`, else newest store for md5(abs cwd).
+pub fn find_store(chat: Option<&str>, cwd: &Path, latest: bool) -> Result<PathBuf> {
+    if let Some(chat) = chat {
+        if Path::new(chat).is_file() {
+            return Ok(PathBuf::from(chat));
+        }
+        if !text::valid_id(chat) {
+            bail!("{chat:?} is neither a store file nor a valid agent id");
+        }
+        return try_store_for_agent(chat)?.with_context(|| format!("no chat store for agent id {chat}"));
+    }
+    let chats = try_chats_dir()?;
+    if latest {
+        let all: Vec<PathBuf> = subdirs(&chats).iter().flat_map(|d| stores_in(d)).collect();
+        return newest(all).with_context(|| format!("no cursor-agent chats in {}", chats.display()));
+    }
+    let project = chats.join(project_hash(cwd));
+    match newest(stores_in(&project)) {
+        Some(p) => Ok(p),
+        None => bail!(
+            "no cursor-agent chats for {} (looked in {}); pass --cwd <workspace> or --latest",
+            cwd.display(),
+            project.display()
+        ),
+    }
+}

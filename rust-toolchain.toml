@@ -1,0 +1,7 @@
+# Pinned toolchain for local development and CI. The crate's minimum
+# supported Rust version (MSRV) is declared separately as `rust-version`
+# in ctxviz/Cargo.toml.
+[toolchain]
+channel = "1.89.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -1,0 +1,8 @@
+scripts/__pycache__/
+*.bak
+ctxviz/target/
+ctxviz/tests/fixtures/
+.DS_Store
+*.swp
+.idea/
+.vscode/

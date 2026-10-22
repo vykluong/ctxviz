@@ -1,0 +1,4 @@
+# Formatting settings for the ctxviz crate (stable rustfmt options only).
+edition = "2021"
+max_width = 120
+use_small_heuristics = "Max"
