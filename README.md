@@ -7,9 +7,27 @@ ctxviz reads the chat store that the Cursor CLI writes on every checkpoint and s
 - **Status line**: a category-colored usage bar rendered inside the `agent` TUI, refreshed on every update.
 - **Explorer TUI**: an interactive explorer tree, timeline chart, and detail pane that update live while the agent works. In Kitty it opens as a split next to the agent window.
 
-![ctxviz TUI split next to a running agent session](docs/screenshots/tui-split.png)
+![An agent session on the left with the ctxviz status line at the bottom; the ctxviz explorer TUI on the right](docs/screenshots/tui-split.png)
 
-*Left: an `agent` session with the ctxviz status line at the bottom. Right: `ctxviz tui`, opened with `ctxviz open`.*
+*Left: an `agent` session with the ctxviz status line at the bottom. Right: `ctxviz tui`, opened with `ctxviz open`, with turn 2 expanded and its final agent message in the detail pane.*
+
+## Contents
+
+- [Requirements](#requirements)
+- [Install](#install)
+- [Quick start](#quick-start)
+  1. [Look at any chat right now](#1-look-at-any-chat-right-now)
+  2. [Put the usage bar in the agent status line](#2-put-the-usage-bar-in-the-agent-status-line)
+  3. [Open the interactive explorer](#3-open-the-interactive-explorer)
+  4. [Kitty: one key to open the explorer next to the agent](#4-kitty-one-key-to-open-the-explorer-next-to-the-agent)
+- [Themes](#themes)
+- [Other commands](#other-commands)
+- [Choosing which chat to read](#choosing-which-chat-to-read)
+- [Files ctxviz writes](#files-ctxviz-writes)
+- [Privacy and security](#privacy-and-security)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [License](#license)
 
 ## Requirements
 
@@ -19,7 +37,7 @@ ctxviz reads the chat store that the Cursor CLI writes on every checkpoint and s
 | Cursor CLI (`agent`) | the sessions ctxviz visualizes | `agent --version` |
 | macOS or Linux | reads `~/.cursor/chats` | |
 | Kitty 0.49 or newer, optional | `ctxviz open`, tab colors, notifications | `kitty --version` |
-| `python3` and `jq`, optional | only for the golden check against the Python reference | |
+| `python3` and `jq`, optional | only for the golden check against the Python reference | `python3 --version` |
 
 No Rust toolchain yet? Install it with [rustup](https://rustup.rs):
 
@@ -50,9 +68,9 @@ Run this from a directory where you have used `agent` before:
 ctxviz snapshot
 ```
 
-![ctxviz snapshot output](docs/screenshots/snapshot.png)
+![ctxviz snapshot output: the usage header, per-category totals, and the Context Explorer tree](docs/screenshots/snapshot.png)
 
-The header is the server-computed breakdown (what Cursor's own "Context Usage" panel shows). The Context Explorer below it is rebuilt locally from the message blobs, so child rows are `chars / 4` estimates and are marked with `~`.
+The header is the server-computed breakdown (what Cursor's own "Context Usage" panel shows). The Context Explorer below it is rebuilt locally from the message blobs, so child rows are `chars / 4` estimates and are marked with `~`. The number after a label is its child count.
 
 Useful variations:
 
@@ -64,7 +82,7 @@ ctxviz snapshot --json | jq .percent
 ctxviz snapshot --json | jq '.breakdown[] | [.label, .estimatedTokens]'
 ```
 
-`snapshot` and `watch` take the same `--theme` and `--theme-file` flags as the status line (see [Themes](#themes)). They color only on a terminal unless you pass a theme explicitly, so piped output stays plain.
+`snapshot` and `watch` color only on a terminal unless you pass `--theme` or `--theme-file` explicitly, so piped output stays plain (see [Themes](#themes)).
 
 If you see `no cursor-agent chats for <dir>`, there is no store for that directory yet. Pass `--latest` or `--cwd`, or start `agent` there first.
 
@@ -87,36 +105,54 @@ cd ~/code/app
 agent
 ```
 
-![ctxviz status line rows](docs/screenshots/statusline-rows.png)
+![The default wide status line, the classic layout, and the one-row layout](docs/screenshots/statusline-rows.png)
+
+#### The default layout
 
 The status line has two rows. At 118 columns it looks like this:
 
 ```
-Claude Opus 5.5  ‹300K Medium›  ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  ~36.4K/300K  11m
-~/code/app  git:main  +41 −7                       ■ chat 22.3K  ■ tools 7K  ■ sys 3.3K
+Claude Opus 5.5  ‹300K Medium›  ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  ~26.6K/300K  19m
+~/code/app  git:main  +73 −4                                                  ■ chat 12.5K  ■ tools 6.3K  ■ sys 3.3K
 ```
 
 And at 64 columns:
 
 ```
-Claude Opus 5.5  ‹300K Medium›  █░░░░░░░░░░░  ~36.4K/300K  11m
-~/code/app  git:main  +41 −7     ■ chat 22.3K
+Claude Opus 5.5  ‹300K Medium›  █░░░░░░░░░░░  ~26.6K/300K  19m
+~/code/app  git:main  +73 −4        ■ chat 12.5K  ■ tools 6.3K
 ```
 
 What the rows mean:
 
-1. **Usage.** The **model name** in bold, the parameter badge in `‹›` (for example `‹300K Medium›`), a **stacked bar** with one color per category, `~used/max` tokens, and the **session duration** since the chat store was created (`11m`, `1h 04m`). The bar takes every column the text does not need, so it grows with the terminal; both rows stop two cells short of the right edge. When fewer than 10 bar cells are left, the row drops the badge, then shortens the model to its family (`Opus 5.5`), then drops the duration.
+1. **Usage.** The **model name** in bold, the parameter badge in `‹›` (for example `‹300K Medium›`), a **stacked bar** with one color per category, `~used/max` tokens, and the **session duration** since the chat store was created (`19m`, `1h 04m`). The bar takes every column the text does not need, so it grows with the terminal; both rows stop two cells short of the right edge. When fewer than 10 bar cells are left, the row drops the badge, then shortens the model to its family (`Opus 5.5`), then drops the duration.
 2. **Place.** The shortened **workspace path** with the leaf in bold, `git:` plus the branch, and the working tree's line counts against `HEAD` as `+added −deleted` (omitted when clean). Right-aligned to the same edge: a **legend** with the three largest categories, largest first, each as a swatch, a short name (`sys`, `tools`, `rules`, `skills`, `mcp`, `agents`, `summary`, `chat`) and its token count. When the legend does not fit it shows two entries, then one, then none; the path shortens to its leaf before the branch is touched. Rows are cut, never wrapped.
 
 Category colors follow the Cursor desktop Context Usage panel (gray system prompt, purple tools, ochre skills, magenta MCP, blue subagents, red-orange conversation) and only identify a category. Usage bands appear on the Kitty tab color and, in the other layouts, on the percent text.
 
-The branch is read from `.git/HEAD`. The diff counts come from `git diff --shortstat HEAD`, run after a quick `git config` lookup of the repository's filter drivers; both calls share a 150 ms budget, after which git is killed and the counts are skipped, so a large working tree cannot stall the status line. Add `--no-git` to the command (or set `CTXVIZ_NO_GIT`, see [Files ctxviz writes](#files-ctxviz-writes)) to never run `git` or read `.git` in the workspace; the branch and diff counts are omitted. The command runs in about 10 ms on a typical store plus the git call, well inside the Cursor CLI's budget. If the store cannot be read it exits non-zero with no output, so Cursor keeps the previous text instead of showing a blank line. Before the first checkpoint the bar is single-colored, scaled from the payload's percent, and the legend and duration are absent.
+Before the first checkpoint the bar is single-colored, scaled from the payload's percent, and the legend and duration are absent. If the store cannot be read, the command exits non-zero with no output, so Cursor keeps the previous text instead of showing a blank line. It runs in about 10 ms on a typical store plus the git call, well inside the Cursor CLI's budget.
 
-`--layout classic` restores the previous two-row layout: the bar, the percent with its band glyph, `used/max` and the legend on row 1 (folding into `■ +n more` and swatches as the row narrows), then the model, badge, path, `git:branch` and a `trend` sparkline with `Δ` on row 2:
+#### Git
+
+The branch is read from `.git/HEAD`. The diff counts come from `git diff --shortstat HEAD`, run after a quick `git config` lookup of the repository's filter drivers; both calls share a 150 ms budget, after which git is killed and the counts are skipped, so a large working tree cannot stall the status line. Add `--no-git` to the command (or set `CTXVIZ_NO_GIT`, see [Files ctxviz writes](#files-ctxviz-writes)) to never run `git` or read `.git` in the workspace; the branch and diff counts are omitted.
+
+#### Options
+
+Add these flags to the `command` in `cli-config.json`:
+
+| Flag | Effect |
+| --- | --- |
+| `--layout classic` | the previous two-row layout, with the percent, a band glyph, and a `trend` sparkline |
+| `--rows 1` | one row: no path or git branch |
+| `--bar labeled` | category segments as background blocks, labeled when wide enough |
+| `--theme <value>` | a color theme (see [Themes](#themes)) |
+| `--no-git` | never run `git` or read `.git` |
+
+`--layout classic` puts the bar, the percent with its band glyph, `used/max`, and the legend on row 1 (folding into `■ +n more` and then swatches as the row narrows), then the model, badge, path, `git:branch`, and a `trend` sparkline with `Δ` on row 2:
 
 ```
-████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 11% ● ~33K/300K  ■ system 3.3K ■ tools 7K ■ chat 18.9K ■ +3 more 3.9K
-Claude Opus 5.5  ‹Medium›  ~/code/app  git:main                             trend ▁▁▂▂▃▅▅▆▆▇▇█ Δ +198
+███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 8.9% ● ~26.6K/300K  ■ system 3.3K ■ tools 6.3K ■ chat 12.5K ■ +4 more 4.5K
+Claude Opus 5.5  ‹300K Medium›  ~/code/app  git:main                                         trend ▁▃▄▅▅▆▇█████ Δ +196
 ```
 
 The glyph after the classic percent shows the usage band, and the percent text takes the same color:
@@ -128,11 +164,108 @@ The glyph after the classic percent shows the usage band, and the percent text t
 | `◑` | low | more than 20% |
 | `○` | critical | 20% or less |
 
+`--rows 1` keeps the bar, the percent, `used/max`, the model, the `‹effort›` badge, the trend with its `Δ`, and the classic legend, but never shows the path or the git branch. When the row is too narrow it folds the legend, shows swatches only, drops the legend, then drops the `Δ`, the trend, the badge, and `used/max`, and finally shrinks the bar.
+
+```
+███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 8.9% ● ~26.6K/300K  Claude Opus 5.5 ‹300K Medium›  trend ▁▃▄▅▅▆▇█████ Δ +196
+```
+
 `--bar labeled` paints each category segment as a solid background block and writes its short name (for example `tools` or `chat`) inside the segment when it is wide enough, so the bar labels itself. It relies on background colors, so check that it renders in your Cursor build before relying on it. The `none` theme falls back to the plain bar.
 
-For a single row, add `--rows 1` to the command (`ctxviz statusline --rows 1`). It keeps the bar, the percent, `used/max`, the model, the `‹effort›` badge, the trend with its `Δ`, and the classic legend, but never shows the path or the git branch. When the row is too narrow it folds the legend, shows swatches only, drops the legend, then drops the `Δ`, the trend, the badge, and `used/max`, and finally shrinks the bar.
+### 3. Open the interactive explorer
 
-#### Themes
+```sh
+ctxviz tui                 # latest chat for the current directory
+ctxviz tui --latest        # or the most recent chat anywhere
+```
+
+![Recording: expanding a turn, filtering the tree, stepping back through the timeline, scrolling the detail pane, and resizing the explorer](docs/recordings/tui.gif)
+
+*Expanding a turn, filtering the tree with `/`, stepping back through checkpoints in the timeline, scrolling the detail pane, and resizing the explorer with `[` and `]`. The source is an [asciinema](https://asciinema.org) recording: play it in your terminal, where you can pause and copy text, with `asciinema play docs/recordings/tui.cast`.*
+
+The TUI watches the store and redraws when a checkpoint lands, so run it in a second terminal while `agent` works (or let [Kitty open it for you](#4-kitty-one-key-to-open-the-explorer-next-to-the-agent)). Two flags change the layout:
+
+```sh
+ctxviz tui --split 50          # explorer takes 50% of the width
+ctxviz tui --timeline-rows 12  # timeline is 12 rows tall
+```
+
+By default the explorer is 36 columns or 35% of the width, whichever is wider, and the timeline is 35% of the body height (between 10 and 16 rows).
+
+What each part shows:
+
+- **Header** (top, no border): row 1 is the classic status line's first row, built by the same code, so the bar, percent, and legend always agree with the agent's status line. Row 2 is the chat name, the model, and the number of checkpoints and compactions.
+- **Explorer** (left): the context tree. Top-level rows carry a `■` swatch in their category color, the same color the header bar and legend use. Expand a conversation turn to see every message, tool call, and tool result with its token estimate.
+- **Timeline** (top right): a summary of the selected checkpoint, a chart of used tokens per checkpoint, and a table with one row per checkpoint (`#`, `msgs`, `used`, `Δ`, `▼`). Compactions are marked `▼` in the summary, the table, and on the chart's x axis. The selected checkpoint has `◀` in the table and a vertical line in the chart. When the panel is narrower than 60 columns inside, the table moves below the chart. With fewer than 8 rows inside, it shows only the summary and a sparkline.
+- **Detail** (bottom right): the selected node's text. The panel title carries its label, kind, category, character count, and token estimate.
+- **Footer**: the key hints, or the filter prompt while you type a filter.
+
+The focused panel has a colored border; `tab` moves focus. Keys:
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, arrows | move (explorer or timeline, depending on focus) |
+| `enter` / `l` | expand the node, or step into it when already open |
+| `h` | collapse, or jump to the parent |
+| `g` / `G` | first / last row |
+| `/` | filter the explorer by label (`enter` keeps the filter, `esc` clears it) |
+| `tab` / `shift+tab` | cycle focus: explorer, timeline, detail |
+| `[` / `]` | narrow or widen the explorer by 4 columns (from any panel, not while typing a filter) |
+| `J` / `K` | scroll the detail pane by one line (from the explorer or the detail pane) |
+| `PgUp` / `PgDn` | move the explorer selection by 10 rows, or scroll the detail pane by 10 lines when it has focus |
+| `o` | open the selected node's text in `$PAGER` (Kitty overlay) |
+| `n` | cycle the notification threshold: 80%, 90%, 95%, off |
+| `q`, `ctrl+c` | quit |
+
+The explorer stays between 24 columns and 80% of the width. The width you set with `[` and `]` is remembered in `~/.cursor/ctxviz/tui.json` for the next run, and `--split` overrides it.
+
+### 4. Kitty: one key to open the explorer next to the agent
+
+![Recording: ctxviz open adds the explorer as a split next to a running agent session, then a turn is expanded and the timeline is stepped back](docs/recordings/open-split.gif)
+
+*`ctxviz open` adds the explorer next to the agent window and leaves the agent focused. The recording then expands a turn, moves focus to the timeline with `tab`, and steps back through checkpoints.*
+
+Kitty integration needs remote control. Add these two lines to `~/.config/kitty/kitty.conf` and restart Kitty:
+
+```conf
+allow_remote_control socket-only
+listen_on unix:${XDG_RUNTIME_DIR}/kitty
+```
+
+ctxviz only talks to Kitty over the socket, so `socket-only` is enough; `yes` would also let escape sequences in any program's output drive Kitty. Put the socket in a directory only you can read. `XDG_RUNTIME_DIR` is private (mode 0700) on most Linux systems, but on macOS it is usually unset; there, create a private directory first (`mkdir -m 700 ~/.local/run`) and use `listen_on unix:/Users/<you>/.local/run/kitty`. A path such as `unix:/tmp/kitty-$USER` is still visible to every user on the machine.
+
+Check it works with `kitten @ ls`, which should print JSON. Then, from the Kitty tab where `agent` is running (or from any shell in that Kitty instance):
+
+```sh
+ctxviz open            # opens the TUI in a split next to the agent, keeps the agent focused
+ctxviz open --focus    # same, but focus the split if it is already open
+```
+
+`ctxviz open` finds the agent window and the chat store from `~/.cursor/ctxviz/current.json`, which the status line writes on every update. So the status line must be configured first, and the agent must have rendered at least once.
+
+For a keyboard shortcut, add to `kitty.conf`, replacing the path with the output of `command -v ctxviz`:
+
+```conf
+map cmd+shift+c launch --type=background --allow-remote-control /Users/<you>/.cargo/bin/ctxviz open
+```
+
+Both parts matter. A background launch does not inherit your shell's `PATH` (Kitty started from the Dock or Finder sees only the system `PATH`), so a bare `ctxviz` is not found. It also gets no `KITTY_LISTEN_ON` unless `--allow-remote-control` is given, which hands it a private remote control socket.
+
+Notes:
+
+- The split is placed with `--location=vsplit`. For a true side-by-side split the tab must use Kitty's `splits` layout; other layouts (`fat`, `tall`, `stack`) place the new window wherever that layout decides. Switch a tab with `kitten @ goto-layout splits`, or put `splits` first in `enabled_layouts`.
+- Running `ctxviz open` twice does not open a second split. It reports the existing window id.
+- The agent redraws its status line on its next update, so right after the split opens the status line may wrap at its old width until the agent next calls ctxviz.
+
+While the status line runs inside Kitty it also colors the agent's tab when usage crosses 80% (orange) and 90% (red), with hysteresis so the color does not flap. The TUI sends a desktop notification on the same crossings (threshold set with `n`) and shows a progress indicator in the tab while a checkpoint is less than two seconds old. Try all three without waiting for a real 85% session:
+
+```sh
+ctxviz notify-test --percent 85    # tab turns orange, notification fires
+ctxviz notify-test --percent 95    # tab turns red
+ctxviz notify-test --percent 10    # back to the theme color
+```
+
+## Themes
 
 `statusline`, `tui`, `notify-test`, and `open` (which forwards them to the TUI) accept the same theme flags. `--theme <value>` beats the `CTXVIZ_THEME` environment variable, which beats auto detection. `snapshot` and `watch` take the same flags but color only on a terminal unless `--theme` or `--theme-file` is passed explicitly. Values:
 
@@ -169,108 +302,6 @@ The status line never queries the terminal. When detection picks wrong, set `CTX
 "command": "/Users/<you>/.cargo/bin/ctxviz statusline --theme dark"
 ```
 
-### 3. Open the interactive explorer
-
-```sh
-ctxviz tui                 # latest chat for the current directory
-ctxviz tui --latest        # or the most recent chat anywhere
-```
-
-The TUI watches the store and redraws when a checkpoint lands, so run it in a second terminal while `agent` works. Two flags change the layout:
-
-```sh
-ctxviz tui --split 50          # explorer takes 50% of the width
-ctxviz tui --timeline-rows 12  # timeline is 12 rows tall
-```
-
-By default the explorer is 36 columns or 35% of the width, whichever is wider, and the timeline is 35% of the body height (between 10 and 16 rows). At 118 columns it looks like this:
-
-```
-████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 11% ● ~33K/300K  ■ system 3.3K ■ tools 7K ■ chat 18.9K ■ +3 more 3.9K
-Example chat · claude-opus-5-5 · 17 ckpts · 0 compactions
-╭ Explorer ─────────────────────────────╮╭ Timeline · 17 ckpts · 0 compactions ──────────────────────────────────────╮
-│▾ ■ Conversation                ~18,873││#17 33.0K/300.0K 11% Δ +198 · Convers│ #    msgs   used     Δ        ▼     │
-│  ▸ Before first user message      ~660││34.6K│                ⢀⣀⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⢲│ 11   19     32.0K    +1.1K          │
-│  ▾ Turn 1                       ~9,630││     │        ⡠⠊⠉⠉⠉⠉⠉⠉⠁             ⢸│ 12   20     32.0K    0              │
-│      User Message                  ~58││24.1K│ ⢀⠖⠒⠒⠒⠊⠉                      ⢸│ 13   21     32.2K    +159           │
-│      Tool: Read                    ~20││     │⢀⠎                            ⢸│ 14   22     32.2K    0              │
-│      Tool Result: Read            ~936││13.6K│⠎                             ⢸│ 15   24     32.5K    +329           │
-│  ▸ Turn 2                         ~861││     └───────────────────────────────│ 16   26     32.8K    +286           │
-│  ▸ Turn 3                         ~289││     1                             17│ 17   27     33.0K    +198        ◀  │
-│  ■ Tool definitions (server-si… ~6,983│╰─────────────────────────────────────┴─────────────────────────────────────╯
-│▸ ■ System prompt                ~3,271│╭ Detail · User Message · message · Conversation · 231 chars · ~58 tokens ──╮
-│▸ ■ Skills                       ~1,775││<user_query>                                                               │
-╰───────────────────────────────────────╯╰───────────────────────────────────────────────────────────────────────────╯
- q quit · tab panel · j/k move · enter/l expand · h collapse · / filter · g/G · [ ] width · o pager · n notify 80%
-```
-
-What each part shows:
-
-- **Header** (top, no border): row 1 is the status line's first row, built by the same code, so the bar, percent, and legend always agree with the agent's status line. Row 2 is the chat name, the model, and the number of checkpoints and compactions.
-- **Explorer** (left): the context tree. Top-level rows carry a `■` swatch in their category color, the same color the header bar and legend use. Expand a conversation turn to see every message, tool call, and tool result with its token estimate.
-- **Timeline** (top right): a summary of the selected checkpoint, a chart of used tokens per checkpoint, and a table with one row per checkpoint (`#`, `msgs`, `used`, `Δ`, `▼`). Compactions are marked `▼` in the summary, the table, and on the chart's x axis. The selected checkpoint has `◀` in the table and a vertical line in the chart. When the panel is narrower than 60 columns inside, the table moves below the chart. With fewer than 8 rows inside, it shows only the summary and a sparkline.
-- **Detail** (bottom right): the selected node's text. The panel title carries its label, kind, category, character count, and token estimate.
-
-Keys:
-
-| Key | Action |
-| --- | --- |
-| `j` / `k`, arrows | move (explorer or timeline, depending on focus) |
-| `enter` / `l` | expand the node, or step into it when already open |
-| `h` | collapse, or jump to the parent |
-| `g` / `G` | first / last row |
-| `/` | filter the explorer by label (`esc` clears) |
-| `tab` / `shift+tab` | cycle focus: explorer, timeline, detail |
-| `[` / `]` | narrow or widen the explorer by 4 columns (from any panel, not while typing a filter) |
-| `J` / `K` | scroll the detail pane by one line (from the explorer or the detail pane) |
-| `PgUp` / `PgDn` | move the explorer selection by 10 rows, or scroll the detail pane by 10 lines when it has focus |
-| `o` | open the selected node's text in `$PAGER` (Kitty overlay) |
-| `n` | cycle the notification threshold: 80%, 90%, 95%, off |
-| `q`, `ctrl+c` | quit |
-
-The explorer stays between 24 columns and 80% of the width. The width you set with `[` and `]` is remembered in `~/.cursor/ctxviz/tui.json` for the next run, and `--split` overrides it.
-
-### 4. Kitty: one key to open the explorer next to the agent
-
-Kitty integration needs remote control. Add these two lines to `~/.config/kitty/kitty.conf` and restart Kitty:
-
-```conf
-allow_remote_control socket-only
-listen_on unix:${XDG_RUNTIME_DIR}/kitty
-```
-
-ctxviz only talks to Kitty over the socket, so `socket-only` is enough; `yes` would also let escape sequences in any program's output drive Kitty. Put the socket in a directory only you can read. `XDG_RUNTIME_DIR` is private (mode 0700) on most Linux systems, but on macOS it is usually unset; there, create a private directory first (`mkdir -m 700 ~/.local/run`) and use `listen_on unix:/Users/<you>/.local/run/kitty`. A path such as `unix:/tmp/kitty-$USER` is still visible to every user on the machine.
-
-Check it works with `kitten @ ls`, which should print JSON. Then, from the Kitty tab where `agent` is running (or from any shell in that Kitty instance):
-
-```sh
-ctxviz open            # opens the TUI in a split next to the agent, keeps the agent focused
-ctxviz open --focus    # same, but focus the split if it is already open
-```
-
-`ctxviz open` finds the agent window and the chat store from `~/.cursor/ctxviz/current.json`, which the status line writes on every update. So the status line must be configured first, and the agent must have rendered at least once.
-
-For a keyboard shortcut, add to `kitty.conf`, replacing the path with the output of `command -v ctxviz`:
-
-```conf
-map cmd+shift+c launch --type=background --allow-remote-control /Users/you/.cargo/bin/ctxviz open
-```
-
-Both parts matter. A background launch does not inherit your shell's `PATH` (Kitty started from the Dock or Finder sees only the system `PATH`), so a bare `ctxviz` is not found. It also gets no `KITTY_LISTEN_ON` unless `--allow-remote-control` is given, which hands it a private remote control socket.
-
-Notes:
-
-- The split is placed with `--location=vsplit`. For a true side-by-side split the tab must use Kitty's `splits` layout; other layouts (`fat`, `tall`, `stack`) place the new window wherever that layout decides. Switch a tab with `kitten @ goto-layout splits`, or put `splits` first in `enabled_layouts`.
-- Running `ctxviz open` twice does not open a second split. It reports the existing window id.
-
-While the status line runs inside Kitty it also colors the agent's tab when usage crosses 80% (orange) and 90% (red), with hysteresis so the color does not flap. The TUI sends a desktop notification on the same crossings (threshold set with `n`) and shows a progress indicator in the tab while a checkpoint is less than two seconds old. Try all three without waiting for a real 85% session:
-
-```sh
-ctxviz notify-test --percent 85    # tab turns orange, notification fires
-ctxviz notify-test --percent 95    # tab turns red
-ctxviz notify-test --percent 10    # back to the theme color
-```
-
 ## Other commands
 
 ### Stream snapshots as they happen
@@ -291,7 +322,7 @@ ctxviz doctor
 
 Prints the resolved store path, meta keys, blob counts, whether the latest root passes the structural checks, and a field-by-field dump of the root protobuf. Run it first if `snapshot` prints nothing useful after a Cursor update; the field numbers it shows are what `ctxviz/src/schema.rs` has to match.
 
-### Choosing which chat to read
+## Choosing which chat to read
 
 `snapshot`, `watch`, `tui`, and `doctor` share the same selectors:
 
@@ -354,7 +385,8 @@ See [SECURITY.md](SECURITY.md) for the threat model, accepted risks, and how to 
   Any `ctxviz statusline: ...` message on stderr is the reason it exited non-zero.
 - **`chat has no checkpoint yet`.** The chat exists but the agent has not completed a turn. Send a message and retry.
 - **`ctxviz open: not in Kitty`.** `KITTY_LISTEN_ON` is not set in that shell. Check the `listen_on` line in `kitty.conf` and restart Kitty.
-- **The `kitty.conf` shortcut does nothing.** A background launch has no window, so its errors are invisible. Every failed `ctxviz open` appends a line to `~/.cursor/ctxviz/open.log`; read it with `tail ~/.cursor/ctxviz/open.log`. A `not in Kitty` line means the mapping lacks `--allow-remote-control`. If Kitty shows a "Failed to run background process" window instead, use the absolute path to `ctxviz` (see section 4).
+- **The `kitty.conf` shortcut does nothing.** A background launch has no window, so its errors are invisible. Every failed `ctxviz open` appends a line to `~/.cursor/ctxviz/open.log`; read it with `tail ~/.cursor/ctxviz/open.log`. A `not in Kitty` line means the mapping lacks `--allow-remote-control`. If Kitty shows a "Failed to run background process" window instead, use the absolute path to `ctxviz` (see [Kitty](#4-kitty-one-key-to-open-the-explorer-next-to-the-agent)).
+- **`ctxviz open` fails with a `kitten @ launch` error about `window_id:N`.** The agent window recorded in `current.json` no longer exists, for example because you closed it and started `agent` in another window. Send a message in the running agent so the status line records its window, then retry.
 - **`ctxviz open: current session has no store path`.** The status line has not seen a checkpoint for the session yet. Send a message in the agent, then retry.
 - **Numbers look wrong after a Cursor upgrade.** Run `ctxviz doctor`; if the structural root test fails, the protobuf field numbers moved.
 

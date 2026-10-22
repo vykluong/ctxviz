@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- README: new screenshots from a neutral demo workspace, an asciinema recording of the TUI, a recording of `ctxviz open`, regenerated status line examples, and a reorganized layout with a table of contents. The crate README gains a source layout section.
+
 ## [0.1.0] - 2026-10-21
 
 Initial public release.
