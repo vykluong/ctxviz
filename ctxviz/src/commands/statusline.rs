@@ -2,7 +2,7 @@
 //!
 //! Reads the payload JSON from stdin, reads the token breakdown from the
 //! session's chat store (one meta row, one root blob, field 5 only), records
-//! the session in `~/.cursor/ctxviz/current.json` and prints the rows.
+//! the session in `<state dir>/current.json` and prints the rows.
 //!
 //! Error policy (docs/plan.md):
 //! - store missing, no root yet, or root without token details: render from
@@ -84,7 +84,7 @@ pub enum Lookup {
     Undecodable(anyhow::Error),
 }
 
-/// `~/.cursor/chats/<md5(abs cwd)>/<session_id>/store.db`, else the exact
+/// `<cursor dir>/chats/<md5(abs cwd)>/<session_id>/store.db`, else the exact
 /// session id under any project dir. A path that exists but is not a file is
 /// still returned so opening it fails as an error, not as "missing".
 pub fn resolve_store(p: &StatusPayload) -> Option<PathBuf> {
@@ -250,7 +250,7 @@ fn after_render(change: Option<BandChange>) {
     }
 }
 
-/// Best effort: `~/.cursor/ctxviz/current.json` for `ctxviz open` and the TUI.
+/// Best effort: `<state dir>/current.json` for `ctxviz open` and the TUI.
 fn record_session(p: &StatusPayload, store: Option<&Path>) {
     let Some(session_id) = p.session_id.clone() else { return };
     let current = CurrentSession {

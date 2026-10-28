@@ -1,5 +1,5 @@
 //! `ctxviz tui`: the live side pane. `--chat`/`--cwd`/`--latest` pin a store;
-//! with none of them it follows `~/.cursor/ctxviz/current.json`.
+//! with none of them it follows `<state dir>/current.json`.
 
 use super::{StoreArgs, ThemeArgs};
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Cursor CLI "Context Usage" report, ported from the Cursor desktop app.
 
-Reads a cursor-agent chat store (~/.cursor/chats/<md5(cwd)>/<agentId>/store.db):
+Reads a cursor-agent chat store (<cursor dir>/chats/<md5(cwd)>/<agentId>/store.db,
+where the cursor dir is $CURSOR_CONFIG_DIR, $XDG_CONFIG_HOME/cursor, or ~/.cursor):
 
   * Totals and category breakdown come from the server-computed
     agent.v1.ConversationTokenDetails.breakdown persisted in the latest root
@@ -31,7 +32,19 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pb import group  # noqa: E402
 
-CHATS_DIR = os.path.expanduser("~/.cursor/chats")
+def cursor_dir():
+    """The Cursor CLI config dir, resolved like the CLI: $CURSOR_CONFIG_DIR,
+    else $XDG_CONFIG_HOME/cursor, else ~/.cursor. Blank values count as unset."""
+    config = os.environ.get("CURSOR_CONFIG_DIR", "")
+    if config.strip():
+        return config
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    if xdg.strip():
+        return os.path.join(xdg, "cursor")
+    return os.path.expanduser("~/.cursor")
+
+
+CHATS_DIR = os.path.join(cursor_dir(), "chats")
 
 # Category ids and order match agent.v1.PromptTokenBreakdownCategory ids.
 CATEGORIES = [

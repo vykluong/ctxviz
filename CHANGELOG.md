@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Chats and the default state dir now follow the Cursor CLI config dir (`$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`) instead of always using `~/.cursor`. With a relocated config dir, the status line used to show only the payload row (no breakdown or trend) and created `~/.cursor/ctxviz`, and the TUI and `snapshot` could not find chats or picked a stale one with `--latest`. A relative path in either variable is rejected.
+- `ctxviz doctor` prints the resolved config, chats, and state dirs.
+
 ## [0.1.0] - 2026-10-21
 
 Initial public release.

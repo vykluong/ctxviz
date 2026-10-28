@@ -34,7 +34,7 @@ pub fn run(args: Args) -> anyhow::Result<i32> {
     }
 }
 
-/// `~/.cursor/ctxviz/open.log`: one line per failed `ctxviz open`.
+/// `<state dir>/open.log`: one line per failed `ctxviz open`.
 pub fn log_path() -> PathBuf {
     crate::session::state_dir().join("open.log")
 }
@@ -49,7 +49,7 @@ pub const LOG_MAX_BYTES: u64 = 256 * 1024;
 /// symlink or other non-file at `path` is left alone.
 fn log_line(path: &Path, ts: u64, msg: &str) {
     if path.starts_with(crate::store::NO_HOME) {
-        return; // No HOME: nowhere to log, and never create the placeholder.
+        return; // No state dir: nowhere to log, and never create the placeholder.
     }
     if let Some(dir) = path.parent() {
         let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir);
@@ -99,7 +99,7 @@ fn open(args: Args) -> Result<(), String> {
     let mut k = kitty::detect().map_err(|reason| {
         format!("not in Kitty ({reason}; a kitty.conf `launch --type=background` needs --allow-remote-control)")
     })?;
-    // Without a usable HOME (and no CTXVIZ_STATE_DIR) the state path is an
+    // Without a usable cursor dir (and no CTXVIZ_STATE_DIR) the state path is an
     // internal placeholder, so report the cause instead of that path.
     let current =
         crate::session::try_state_dir().map_err(|e| format!("no current session ({e:#})"))?.join("current.json");

@@ -22,9 +22,28 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> anyhow::Result<i32> {
-    let path = args.store.resolve()?;
     let mut out = std::io::stdout().lock();
+    // Before the lookup, so a failed one still shows where it looked.
+    dirs(&mut out)?;
+    let path = args.store.resolve()?;
     report(&path, &args, &mut out)
+}
+
+/// The Cursor CLI config dir (and which variable chose it), the chats dir, and
+/// the state dir.
+fn dirs(out: &mut dyn Write) -> anyhow::Result<()> {
+    match crate::store::try_cursor_dir_with_source() {
+        Ok((dir, source)) => {
+            writeln!(out, "cursor dir: {} (from {source})", show(&dir.display().to_string()))?;
+            writeln!(out, "chats dir: {}", show(&dir.join("chats").display().to_string()))?;
+        }
+        Err(e) => writeln!(out, "WARN: no cursor dir: {}", show(&format!("{e:#}")))?,
+    }
+    match crate::session::try_state_dir() {
+        Ok(dir) => writeln!(out, "state dir: {}", show(&dir.display().to_string()))?,
+        Err(e) => writeln!(out, "WARN: no state dir: {}", show(&format!("{e:#}")))?,
+    }
+    Ok(())
 }
 
 /// One-line, control-free rendering of a store-derived value.

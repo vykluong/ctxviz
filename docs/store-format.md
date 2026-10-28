@@ -7,8 +7,10 @@ This page describes the parts of the cursor-agent chat store that `ctxviz` reads
 Each chat has its own SQLite database:
 
 ```
-~/.cursor/chats/<md5(abs cwd)>/<agentId>/store.db
+<cursor dir>/chats/<md5(abs cwd)>/<agentId>/store.db
 ```
+
+- `<cursor dir>` is the Cursor CLI config dir: `$CURSOR_CONFIG_DIR` when set and not blank, else `$XDG_CONFIG_HOME/cursor` when that is set and not blank, else `~/.cursor`. `CURSOR_DATA_DIR` does not move chats; it only moves `projects/` (transcripts).
 
 - `<md5(abs cwd)>` is the lowercase hex md5 of the absolute workspace path, for example `0123456789abcdef0123456789abcdef`.
 - `<agentId>` is the chat id. It equals the `session_id` field of the status line payload, which is how the status line finds its store.

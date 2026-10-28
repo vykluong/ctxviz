@@ -2,8 +2,10 @@
 //! `meta.agentId`, views posing as tables, deep protobuf groups, random bytes,
 //! state file permissions, and SQLite sidecar behavior.
 //!
-//! `CTXVIZ_STATE_DIR` and `HOME` are process-global, so every test that reads
-//! or sets them holds `ENV_LOCK` and uses its own unique temp dir.
+//! `CTXVIZ_STATE_DIR`, `HOME`, `CURSOR_CONFIG_DIR` and `XDG_CONFIG_HOME` are
+//! process-global, so every test that reads or sets them holds `ENV_LOCK` and
+//! uses its own unique temp dir. Tests that rely on `HOME` clear the other two
+//! with [`home_only`], since a developer shell may export them.
 
 mod common;
 
@@ -45,6 +47,12 @@ impl Drop for EnvVar {
             None => std::env::remove_var(self.0),
         }
     }
+}
+
+/// Clears `CURSOR_CONFIG_DIR` and `XDG_CONFIG_HOME` so `HOME` alone picks
+/// the cursor dir. Hold the guards for the whole test.
+fn home_only() -> [EnvVar; 2] {
+    [EnvVar::set("CURSOR_CONFIG_DIR", None), EnvVar::set("XDG_CONFIG_HOME", None)]
 }
 
 /// Root blob with one message id, token details, and createdAt.
@@ -132,6 +140,7 @@ fn invalid_agent_ids_are_refused() {
     let _g = env_lock();
     let home = TempDir::new("hardening-home");
     let _env = EnvVar::set("HOME", Some(&home.0));
+    let _only = home_only();
     // A real store reachable by traversal must still not be found.
     let target = home.0.join(".cursor/x");
     std::fs::create_dir_all(&target).unwrap();
@@ -247,6 +256,7 @@ fn state_files_are_private_and_capped() {
 #[test]
 fn missing_home_is_an_error() {
     let _g = env_lock();
+    let _only = home_only();
     {
         let _home = EnvVar::set("HOME", None);
         let _state = EnvVar::set("CTXVIZ_STATE_DIR", None);
@@ -264,6 +274,41 @@ fn missing_home_is_an_error() {
 }
 
 #[test]
+fn cursor_config_dir_overrides_home() {
+    let _g = env_lock();
+    let root = TempDir::new("hardening-cursor-dir");
+    let cfg = root.0.join("cfg");
+    let _state = EnvVar::set("CTXVIZ_STATE_DIR", None);
+    let _xdg = EnvVar::set("XDG_CONFIG_HOME", Some(&root.0.join("xdg")));
+    {
+        // CURSOR_CONFIG_DIR wins over XDG_CONFIG_HOME and needs no HOME.
+        let _home = EnvVar::set("HOME", None);
+        let _cfg = EnvVar::set("CURSOR_CONFIG_DIR", Some(&cfg));
+        assert_eq!(store::try_chats_dir().unwrap(), cfg.join("chats"));
+        assert_eq!(session::try_state_dir().unwrap(), cfg.join("ctxviz"));
+        let store_dir = cfg.join("chats/proj/agent-1");
+        std::fs::create_dir_all(&store_dir).unwrap();
+        let path = make_store(&store_dir, "agent-1");
+        assert_eq!(store::store_for_agent("agent-1"), Some(path.clone()));
+        assert_eq!(store::find_store(None, Path::new("/"), true).unwrap(), path);
+    }
+    {
+        let _cfg = EnvVar::set("CURSOR_CONFIG_DIR", None);
+        assert_eq!(store::try_chats_dir().unwrap(), root.0.join("xdg/cursor/chats"));
+        assert_eq!(session::try_state_dir().unwrap(), root.0.join("xdg/cursor/ctxviz"));
+    }
+    {
+        // A relative override is an error, never a lookup relative to the cwd.
+        let _cfg = EnvVar::set("CURSOR_CONFIG_DIR", Some(Path::new("rel/cfg")));
+        let err = format!("{:#}", store::try_chats_dir().unwrap_err());
+        assert!(err.contains("not an absolute path"), "{err}");
+        assert!(session::try_state_dir().is_err());
+        assert!(CurrentSession { session_id: "abc".into(), ..Default::default() }.write().is_err());
+        assert!(!Path::new("rel").exists());
+    }
+}
+
+#[test]
 fn missing_home_messages_hide_placeholder() {
     // `ctxviz open` without HOME (and no CTXVIZ_STATE_DIR) names the cause, not
     // the internal placeholder path. A fake KITTY_LISTEN_ON gets past
@@ -272,6 +317,8 @@ fn missing_home_messages_hide_placeholder() {
         .arg("open")
         .env_remove("HOME")
         .env_remove("CTXVIZ_STATE_DIR")
+        .env_remove("CURSOR_CONFIG_DIR")
+        .env_remove("XDG_CONFIG_HOME")
         .env("KITTY_LISTEN_ON", "unix:/nonexistent/ctxviz-test.sock")
         .output()
         .unwrap();
@@ -312,6 +359,8 @@ fn statusline_renders_payload_row_for_corrupt_root() {
         .args(["statusline", "--theme", "none"])
         .env("HOME", &home)
         .env("CTXVIZ_STATE_DIR", root.0.join("state"))
+        .env_remove("CURSOR_CONFIG_DIR")
+        .env_remove("XDG_CONFIG_HOME")
         .env("CTXVIZ_NO_GIT", "1")
         .env_remove("KITTY_LISTEN_ON")
         .stdin(std::process::Stdio::piped())
@@ -328,6 +377,73 @@ fn statusline_renders_payload_row_for_corrupt_root() {
     assert!(!stdout.trim().is_empty(), "blank row; stderr: {stderr}");
     assert!(stdout.contains("84K/200K"), "payload usage missing: {stdout}");
     assert!(stderr.contains("decoding root token details"), "{stderr}");
+}
+
+/// Run `ctxviz statusline` on `payload` with `env` (and a bare environment
+/// for the cursor dir variables); returns exit code, stdout, stderr.
+fn run_statusline(payload: &serde_json::Value, env: &[(&str, Option<&Path>)]) -> (Option<i32>, String, String) {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ctxviz"));
+    cmd.args(["statusline", "--theme", "none", "--rows", "1"]).env("CTXVIZ_NO_GIT", "1").env_remove("KITTY_LISTEN_ON");
+    for key in ["CTXVIZ_STATE_DIR", "CURSOR_CONFIG_DIR", "XDG_CONFIG_HOME"] {
+        cmd.env_remove(key);
+    }
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
+    }
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn statusline_follows_relocated_cursor_dir() {
+    // The Cursor CLI keeps chats in $CURSOR_CONFIG_DIR (or
+    // $XDG_CONFIG_HOME/cursor) when set. The status line must read the store
+    // there, not fall back to the payload-only row, and keep its state there
+    // without creating ~/.cursor.
+    for var in ["CURSOR_CONFIG_DIR", "XDG_CONFIG_HOME"] {
+        let root = TempDir::new("hardening-statusline-relocated");
+        let home = root.0.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let (env_value, cursor_dir) = match var {
+            "CURSOR_CONFIG_DIR" => (root.0.join("cfg"), root.0.join("cfg")),
+            _ => (root.0.join("xdg"), root.0.join("xdg/cursor")),
+        };
+        let cwd = root.0.join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let sid = "relocated-session";
+        let store_dir = cursor_dir.join("chats").join(store::project_hash(&cwd)).join(sid);
+        std::fs::create_dir_all(&store_dir).unwrap();
+        make_store(&store_dir, sid);
+
+        let payload = serde_json::json!({
+            "session_id": sid,
+            "cwd": cwd,
+            "context_window": { "used_percentage": 42, "context_window_size": 200000 },
+        });
+        let (code, stdout, stderr) = run_statusline(&payload, &[("HOME", Some(&home)), (var, Some(&env_value))]);
+        assert_eq!(code, Some(0), "{var}: stderr: {stderr}");
+        // The store's root (2000 of 200000 tokens) wins over the payload's 42%.
+        assert!(stdout.contains("1%"), "{var}: store not read: {stdout}");
+        assert!(!stdout.contains("84K"), "{var}: payload-only row: {stdout}");
+        let current = CurrentSession::read_from(&cursor_dir.join("ctxviz/current.json")).expect("current.json");
+        assert_eq!(current.store.as_deref(), Some(store_dir.join("store.db").as_path()));
+        assert!(!home.join(".cursor").exists(), "{var}: created ~/.cursor");
+    }
 }
 
 #[test]

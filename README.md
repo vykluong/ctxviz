@@ -17,7 +17,7 @@ ctxviz reads the chat store that the Cursor CLI writes on every checkpoint and s
 | --- | --- | --- |
 | Rust toolchain (built with 1.89) | builds the binary | `cargo --version` |
 | Cursor CLI (`agent`) | the sessions ctxviz visualizes | `agent --version` |
-| macOS or Linux | reads `~/.cursor/chats` | |
+| macOS or Linux | reads the Cursor CLI's `chats` dir (`~/.cursor/chats` by default) | |
 | Kitty 0.49 or newer, optional | `ctxviz open`, tab colors, notifications | `kitty --version` |
 | `python3` and `jq`, optional | only for the golden check against the Python reference | |
 
@@ -70,7 +70,7 @@ If you see `no cursor-agent chats for <dir>`, there is no store for that directo
 
 ### 2. Put the usage bar in the agent status line
 
-Point the Cursor CLI at the binary. Edit `~/.cursor/cli-config.json` and add a `statusLine` block (replace `<you>` with your user name):
+Point the Cursor CLI at the binary. Edit `~/.cursor/cli-config.json` (or `cli-config.json` in your [Cursor config dir](#where-ctxviz-looks-for-chats) if you moved it) and add a `statusLine` block (replace `<you>` with your user name):
 
 ```json
 "statusLine": {
@@ -228,7 +228,7 @@ Keys:
 | `n` | cycle the notification threshold: 80%, 90%, 95%, off |
 | `q`, `ctrl+c` | quit |
 
-The explorer stays between 24 columns and 80% of the width. The width you set with `[` and `]` is remembered in `~/.cursor/ctxviz/tui.json` for the next run, and `--split` overrides it.
+The explorer stays between 24 columns and 80% of the width. The width you set with `[` and `]` is remembered in `tui.json` in the [state dir](#files-ctxviz-writes) for the next run, and `--split` overrides it.
 
 ### 4. Kitty: one key to open the explorer next to the agent
 
@@ -248,7 +248,7 @@ ctxviz open            # opens the TUI in a split next to the agent, keeps the a
 ctxviz open --focus    # same, but focus the split if it is already open
 ```
 
-`ctxviz open` finds the agent window and the chat store from `~/.cursor/ctxviz/current.json`, which the status line writes on every update. So the status line must be configured first, and the agent must have rendered at least once.
+`ctxviz open` finds the agent window and the chat store from `current.json` in the [state dir](#files-ctxviz-writes), which the status line writes on every update. So the status line must be configured first, and the agent must have rendered at least once.
 
 For a keyboard shortcut, add to `kitty.conf`, replacing the path with the output of `command -v ctxviz`:
 
@@ -305,11 +305,21 @@ Prints the resolved store path, meta keys, blob counts, whether the latest root 
 
 An agent id must match `[A-Za-z0-9._-]{1,128}` and must not start with a dot; anything else is rejected unless it names an existing file, which is opened directly. The same rule applies to the status line payload's `session_id`.
 
-Stores live at `~/.cursor/chats/<md5 of workspace path>/<agentId>/store.db`.
+Stores live at `<cursor dir>/chats/<md5 of workspace path>/<agentId>/store.db`.
+
+### Where ctxviz looks for chats
+
+ctxviz finds the Cursor config dir the same way the Cursor CLI does:
+
+1. `$CURSOR_CONFIG_DIR`, when set and not blank;
+2. else `$XDG_CONFIG_HOME/cursor`, when `XDG_CONFIG_HOME` is set and not blank;
+3. else `~/.cursor`.
+
+Chats are read from `chats/` in that dir, and the default state dir is `ctxviz/` in it. Unlike the CLI, ctxviz rejects a relative path in either variable. The status line inherits the agent's environment, but `ctxviz tui`, `snapshot`, `watch`, and `doctor` run from your shell, so export the same variables there. `ctxviz doctor` prints the dirs it resolved and which variable chose them.
 
 ## Files ctxviz writes
 
-Every file ctxviz writes lives in its state dir, `~/.cursor/ctxviz` by default:
+Every file ctxviz writes lives in its state dir, `ctxviz/` in the [Cursor config dir](#where-ctxviz-looks-for-chats) (`~/.cursor/ctxviz` by default):
 
 | Path in the state dir | Purpose |
 | --- | --- |
@@ -323,6 +333,7 @@ New directories are created with mode 0700 and files with mode 0600. Deleting an
 
 Environment variables:
 
+- **`CURSOR_CONFIG_DIR`**, **`XDG_CONFIG_HOME`**: where the Cursor CLI keeps its config and chats (see [Where ctxviz looks for chats](#where-ctxviz-looks-for-chats)). They move both the chats ctxviz reads and the default state dir.
 - **`CTXVIZ_STATE_DIR`**: when set and non-empty, moves the whole state dir, so every file above (`current.json`, `tui.json`, `open.log`, the timeline caches, and `pager/`) goes there instead.
 - **`CTXVIZ_NO_GIT`**: any value other than empty, `0`, or `false` (any case) acts like `--no-git` on the status line.
 - **`CTXVIZ_THEME`**: the default theme (see [Themes](#themes)).
@@ -333,9 +344,9 @@ Outside the state dir, the only files that appear because of ctxviz are SQLite's
 
 ctxviz runs entirely on your machine. It makes no network connections and has no telemetry, so nothing from your chats leaves the machine.
 
-- **Reads.** Cursor chat stores under `~/.cursor/chats`, opened read-only with SQLite's defensive mode, `trusted_schema` off, and `query_only` on. It also reads the status line payload on stdin, its own state files, `.git/HEAD` in the workspace, and a `--theme-file` when you pass one.
-- **Writes.** The files listed in [Files ctxviz writes](#files-ctxviz-writes), under `~/.cursor/ctxviz` or `$CTXVIZ_STATE_DIR`. ctxviz never modifies a chat store.
-- **SQLite sidecars.** Opening a WAL-mode store, even read-only, makes SQLite create `store.db-wal` and `store.db-shm` next to it in `~/.cursor/chats/...` when they are missing, and they stay after ctxviz exits. This is the only write ctxviz causes outside its state dir. The Cursor CLI leaves the same two files while a chat is live.
+- **Reads.** Cursor chat stores under `<cursor dir>/chats` (`~/.cursor/chats` by default), opened read-only with SQLite's defensive mode, `trusted_schema` off, and `query_only` on. It also reads the status line payload on stdin, its own state files, `.git/HEAD` in the workspace, and a `--theme-file` when you pass one.
+- **Writes.** The files listed in [Files ctxviz writes](#files-ctxviz-writes), under the state dir (`~/.cursor/ctxviz` by default, or `$CTXVIZ_STATE_DIR`). ctxviz never modifies a chat store.
+- **SQLite sidecars.** Opening a WAL-mode store, even read-only, makes SQLite create `store.db-wal` and `store.db-shm` next to it in `<cursor dir>/chats/...` when they are missing, and they stay after ctxviz exits. This is the only write ctxviz causes outside its state dir. The Cursor CLI leaves the same two files while a chat is live.
 - **Pager files.** Pressing `o` in the TUI writes the selected node's sanitized text to a randomly named file with mode 0600 under `<state dir>/pager/`. The shell in the Kitty overlay deletes it after the pager exits. Files older than one hour, left behind when the overlay never finished, are swept when the TUI starts.
 - **Runs `git`.** It runs in the workspace for the diff counts with a cleared environment (only `PATH` and `HOME` kept), `GIT_CONFIG_GLOBAL=/dev/null`, and `GIT_CONFIG_NOSYSTEM=1`, so your global and system git config, including aliases, are ignored. Command-line overrides disable hooks, fsmonitor, the external diff, the git pager, and `core.attributesFile`. Textconv is off, and every `filter.<driver>` clean, smudge, and process command is replaced with a no-op. Both git calls share a 150 ms budget. Turn git off with `--no-git` or `CTXVIZ_NO_GIT=1`.
 - **Runs Kitty and your pager.** Inside Kitty it runs `kitten @` over the `KITTY_LISTEN_ON` socket. When you press `o`, the overlay runs `$PAGER` as the TUI sees it (default `less`). The value is passed to the overlay with `kitten @ launch --env` and is never spliced into the shell script, so shell syntax in it is not evaluated; it is only split into words, so `less -R` still works.
@@ -354,7 +365,7 @@ See [SECURITY.md](SECURITY.md) for the threat model, accepted risks, and how to 
   Any `ctxviz statusline: ...` message on stderr is the reason it exited non-zero.
 - **`chat has no checkpoint yet`.** The chat exists but the agent has not completed a turn. Send a message and retry.
 - **`ctxviz open: not in Kitty`.** `KITTY_LISTEN_ON` is not set in that shell. Check the `listen_on` line in `kitty.conf` and restart Kitty.
-- **The `kitty.conf` shortcut does nothing.** A background launch has no window, so its errors are invisible. Every failed `ctxviz open` appends a line to `~/.cursor/ctxviz/open.log`; read it with `tail ~/.cursor/ctxviz/open.log`. A `not in Kitty` line means the mapping lacks `--allow-remote-control`. If Kitty shows a "Failed to run background process" window instead, use the absolute path to `ctxviz` (see section 4).
+- **The `kitty.conf` shortcut does nothing.** A background launch has no window, so its errors are invisible. Every failed `ctxviz open` appends a line to `open.log` in the state dir; with the defaults, read it with `tail ~/.cursor/ctxviz/open.log`. A `not in Kitty` line means the mapping lacks `--allow-remote-control`. If Kitty shows a "Failed to run background process" window instead, use the absolute path to `ctxviz` (see section 4).
 - **`ctxviz open: current session has no store path`.** The status line has not seen a checkpoint for the session yet. Send a message in the agent, then retry.
 - **Numbers look wrong after a Cursor upgrade.** Run `ctxviz doctor`; if the structural root test fails, the protobuf field numbers moved.
 

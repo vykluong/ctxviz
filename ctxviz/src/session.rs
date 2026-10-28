@@ -1,7 +1,7 @@
-//! `~/.cursor/ctxviz/current.json`: the session the status line last saw,
-//! so `ctxviz open` and an unpinned TUI can follow it.
+//! `<state dir>/current.json`: the session the status line last saw, so
+//! `ctxviz open` and an unpinned TUI can follow it.
 //!
-//! Also owns the state dir (`$CTXVIZ_STATE_DIR` or `~/.cursor/ctxviz`) and the
+//! Also owns the state dir (`$CTXVIZ_STATE_DIR` or `<cursor dir>/ctxviz`) and the
 //! hardened atomic writer every state file goes through.
 
 use anyhow::{bail, Context, Result};
@@ -27,15 +27,16 @@ pub struct CurrentSession {
 }
 
 /// The one state dir: `$CTXVIZ_STATE_DIR` if set and non-empty, else
-/// `~/.cursor/ctxviz`. Errors when neither is usable.
+/// `ctxviz` in the Cursor CLI config dir ([`crate::store::try_cursor_dir`],
+/// `~/.cursor/ctxviz` by default). Errors when neither is usable.
 pub fn try_state_dir() -> Result<PathBuf> {
     match std::env::var_os("CTXVIZ_STATE_DIR") {
         Some(d) if !d.is_empty() => Ok(PathBuf::from(d)),
-        _ => Ok(crate::store::home()?.join(".cursor/ctxviz")),
+        _ => Ok(crate::store::try_cursor_dir()?.join("ctxviz")),
     }
 }
 
-/// Infallible [`try_state_dir`]: without a usable `HOME` (and no override) it
+/// Infallible [`try_state_dir`]: without a usable cursor dir (and no override) it
 /// returns a path under [`crate::store::NO_HOME`], which reads as empty and
 /// which [`write_atomic`] refuses to write.
 pub fn state_dir() -> PathBuf {
@@ -54,7 +55,7 @@ pub fn current_path() -> PathBuf {
     state_dir().join("current.json")
 }
 
-/// `~/.cursor/ctxviz/tui.json`: TUI layout remembered across runs.
+/// `<state dir>/tui.json`: TUI layout remembered across runs.
 pub fn tui_state_path() -> PathBuf {
     state_dir().join("tui.json")
 }
@@ -89,7 +90,7 @@ impl TuiState {
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if path.starts_with(crate::store::NO_HOME) {
         // The sentinel path is internal; do not show it to the user.
-        bail!("not writing state: HOME is not set and CTXVIZ_STATE_DIR is empty");
+        bail!("not writing state: HOME is not set (or CURSOR_CONFIG_DIR or XDG_CONFIG_HOME is not absolute) and CTXVIZ_STATE_DIR is empty");
     }
     let name = path.file_name().with_context(|| format!("no file name in {}", path.display()))?;
     let dir = match path.parent() {

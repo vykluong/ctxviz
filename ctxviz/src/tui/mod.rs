@@ -452,7 +452,7 @@ mod tests {
 
     /// Draw a full frame of `store` and check the header, title, and tree.
     fn check_store_frame(store: &Store) -> Vec<String> {
-        // timeline: false keeps the test from writing a cache under ~/.cursor.
+        // timeline: false keeps the test from writing a cache in the state dir.
         let snap = Snapshot::load(store, SnapshotOptions { tree: true, timeline: false }).unwrap().unwrap();
         let pct = crate::render::statusline::percent_text(snap.percent.unwrap());
         let mut app = App::new();

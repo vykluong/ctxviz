@@ -1,6 +1,7 @@
 //! Read-only access to a cursor-agent chat store
-//! (`~/.cursor/chats/<md5(cwd)>/<agentId>/store.db`, tables `blobs(id, data)`
-//! and `meta(key, value)`).
+//! (`<cursor dir>/chats/<md5(cwd)>/<agentId>/store.db`, tables `blobs(id, data)`
+//! and `meta(key, value)`). The cursor dir is resolved like the Cursor CLI
+//! does it; see [`try_cursor_dir`].
 //!
 //! A store is untrusted input: it is opened read-only with defensive SQLite
 //! settings, `blobs` and `meta` must be real tables, and oversized values are
@@ -218,7 +219,8 @@ pub fn last_write(path: &Path) -> WriteStamp {
 }
 
 /// `$HOME`, which must be set, non-empty, and absolute. There is no fallback
-/// to `/`: without a home there is no chats dir and no state dir.
+/// to `/`: without a home (and no `CURSOR_CONFIG_DIR` or `XDG_CONFIG_HOME`)
+/// there is no chats dir and no state dir.
 pub fn home() -> Result<PathBuf> {
     match std::env::var_os("HOME") {
         Some(h) if !h.is_empty() && Path::new(&h).is_absolute() => Ok(PathBuf::from(h)),
@@ -227,19 +229,75 @@ pub fn home() -> Result<PathBuf> {
     }
 }
 
-/// `~/.cursor/chats`, or an error when `HOME` is unusable.
-pub fn try_chats_dir() -> Result<PathBuf> {
-    Ok(home()?.join(".cursor/chats"))
+/// Overrides the Cursor CLI config dir, which holds `chats/` and `cli-config.json`.
+pub const CURSOR_CONFIG_DIR_ENV: &str = "CURSOR_CONFIG_DIR";
+
+/// Where the Cursor CLI config dir came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorDirSource {
+    /// `$CURSOR_CONFIG_DIR`.
+    ConfigDirEnv,
+    /// `$XDG_CONFIG_HOME/cursor`.
+    XdgConfigHome,
+    /// `~/.cursor`.
+    Home,
 }
 
-/// Infallible form of [`try_chats_dir`] for lookups: without a usable `HOME`
-/// it returns a path under [`NO_HOME`] that never exists, so lookups find
+impl std::fmt::Display for CursorDirSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CursorDirSource::ConfigDirEnv => "$CURSOR_CONFIG_DIR",
+            CursorDirSource::XdgConfigHome => "$XDG_CONFIG_HOME/cursor",
+            CursorDirSource::Home => "~/.cursor",
+        })
+    }
+}
+
+/// The Cursor CLI config dir, resolved the way the CLI does it:
+/// `$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`.
+/// A value that is empty or only whitespace counts as unset. Unlike the CLI,
+/// a relative path is an error: the status line runs in the workspace, so it
+/// would resolve somewhere else.
+pub fn try_cursor_dir() -> Result<PathBuf> {
+    Ok(try_cursor_dir_with_source()?.0)
+}
+
+/// [`try_cursor_dir`] and which variable chose it.
+pub fn try_cursor_dir_with_source() -> Result<(PathBuf, CursorDirSource)> {
+    resolve_cursor_dir(std::env::var_os(CURSOR_CONFIG_DIR_ENV), std::env::var_os("XDG_CONFIG_HOME"), home)
+}
+
+/// [`try_cursor_dir_with_source`] over explicit values, for tests.
+pub fn resolve_cursor_dir(
+    config_dir: Option<std::ffi::OsString>,
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: impl FnOnce() -> Result<PathBuf>,
+) -> Result<(PathBuf, CursorDirSource)> {
+    let set = |v: Option<std::ffi::OsString>| v.filter(|v| !v.to_string_lossy().trim().is_empty()).map(PathBuf::from);
+    let (dir, source) = match (set(config_dir), set(xdg_config_home)) {
+        (Some(d), _) => (d, CursorDirSource::ConfigDirEnv),
+        (None, Some(x)) => (x.join("cursor"), CursorDirSource::XdgConfigHome),
+        (None, None) => (home()?.join(".cursor"), CursorDirSource::Home),
+    };
+    if !dir.is_absolute() {
+        bail!("{source} is not an absolute path: {}", dir.display());
+    }
+    Ok((dir, source))
+}
+
+/// `<cursor dir>/chats`, or an error when no cursor dir is usable.
+pub fn try_chats_dir() -> Result<PathBuf> {
+    Ok(try_cursor_dir()?.join("chats"))
+}
+
+/// Infallible form of [`try_chats_dir`] for lookups: without a usable cursor
+/// dir it returns a path under [`NO_HOME`] that never exists, so lookups find
 /// nothing instead of searching `/`.
 pub fn chats_dir() -> PathBuf {
     try_chats_dir().unwrap_or_else(|_| PathBuf::from(NO_HOME).join(".cursor/chats"))
 }
 
-/// Placeholder root used when `HOME` is unusable. Nothing is ever read from or
+/// Placeholder root used when no cursor dir is usable. Nothing is ever read from or
 /// written under it: `session::write_atomic` refuses paths below it.
 pub const NO_HOME: &str = "/nonexistent/ctxviz-no-home";
 
@@ -318,5 +376,42 @@ pub fn find_store(chat: Option<&str>, cwd: &Path, latest: bool) -> Result<PathBu
             cwd.display(),
             project.display()
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn resolve(config: Option<&str>, xdg: Option<&str>) -> Result<(PathBuf, CursorDirSource)> {
+        resolve_cursor_dir(config.map(OsString::from), xdg.map(OsString::from), || Ok(PathBuf::from("/home/u")))
+    }
+
+    #[test]
+    fn cursor_dir_follows_the_cli_order() {
+        let ok = |c, x| resolve(c, x).unwrap();
+        assert_eq!(ok(None, None), (PathBuf::from("/home/u/.cursor"), CursorDirSource::Home));
+        assert_eq!(ok(None, Some("/xdg")), (PathBuf::from("/xdg/cursor"), CursorDirSource::XdgConfigHome));
+        assert_eq!(ok(Some("/cfg"), Some("/xdg")), (PathBuf::from("/cfg"), CursorDirSource::ConfigDirEnv));
+        // Empty and whitespace-only values count as unset, as in the CLI.
+        assert_eq!(ok(Some(""), Some(" \t")), (PathBuf::from("/home/u/.cursor"), CursorDirSource::Home));
+        assert_eq!(ok(Some("  "), Some("/xdg")).1, CursorDirSource::XdgConfigHome);
+    }
+
+    #[test]
+    fn cursor_dir_rejects_relative_paths() {
+        let err = format!("{:#}", resolve(Some("rel/cfg"), None).unwrap_err());
+        assert!(err.contains("$CURSOR_CONFIG_DIR is not an absolute path"), "{err}");
+        let err = format!("{:#}", resolve(None, Some("rel")).unwrap_err());
+        assert!(err.contains("$XDG_CONFIG_HOME/cursor is not an absolute path"), "{err}");
+    }
+
+    #[test]
+    fn cursor_dir_needs_home_only_as_the_fallback() {
+        let no_home = || -> Result<PathBuf> { bail!("HOME is not set") };
+        assert!(resolve_cursor_dir(None, None, no_home).is_err());
+        let (dir, _) = resolve_cursor_dir(Some("/cfg".into()), None, no_home).unwrap();
+        assert_eq!(dir, PathBuf::from("/cfg"));
     }
 }

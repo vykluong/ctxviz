@@ -18,7 +18,8 @@ For development, `cargo build --release` in `ctxviz/` builds
 
 ## Status line
 
-Point the Cursor CLI at the binary in `~/.cursor/cli-config.json`:
+Point the Cursor CLI at the binary in `cli-config.json` in its config dir
+(`$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`):
 
 ```json
 "statusLine": {
@@ -87,7 +88,8 @@ file is still opened directly.
 ## State files
 
 All state lives in one state dir: `$CTXVIZ_STATE_DIR` when set and non-empty,
-else `~/.cursor/ctxviz`. The variable moves every file below. New directories
+else `ctxviz/` in the Cursor config dir (`~/.cursor/ctxviz` by default). Chats
+are read from `chats/` in the same config dir. The variable moves every file below. New directories
 are created with mode 0700 and files with mode 0600.
 
 - `<state dir>/current.json`: the session the status line last saw
@@ -151,7 +153,7 @@ scripts/make-fixture.sh ~/.cursor/chats/<md5(cwd)>/<agentId>/store.db
 ## Kitty
 
 `ctxviz open` opens the TUI in a vsplit next to the agent window recorded in
-`~/.cursor/ctxviz/current.json` (or reports the split already open; `--focus`
+`<state dir>/current.json` (or reports the split already open; `--focus`
 focuses it). Suggested `kitty.conf` binding, with the path replaced by the
 output of `command -v ctxviz` (see the top-level README for why both the
 absolute path and `--allow-remote-control` are needed):
