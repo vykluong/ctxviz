@@ -232,6 +232,10 @@ pub fn home() -> Result<PathBuf> {
 /// Overrides the Cursor CLI config dir, which holds `chats/` and `cli-config.json`.
 pub const CURSOR_CONFIG_DIR_ENV: &str = "CURSOR_CONFIG_DIR";
 
+/// ctxviz's own override for the Cursor CLI config dir, for when the shell's
+/// `CURSOR_CONFIG_DIR` is not the one the agent uses.
+pub const CTXVIZ_CURSOR_DIR_ENV: &str = "CTXVIZ_CURSOR_DIR";
+
 /// Where the Cursor CLI config dir came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorDirSource {

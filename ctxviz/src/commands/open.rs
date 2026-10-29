@@ -101,10 +101,12 @@ fn open(args: Args) -> Result<(), String> {
     })?;
     // Without a usable cursor dir (and no CTXVIZ_STATE_DIR) the state path is an
     // internal placeholder, so report the cause instead of that path.
-    let current =
-        crate::session::try_state_dir().map_err(|e| format!("no current session ({e:#})"))?.join("current.json");
-    let cur = CurrentSession::read_from(&current)
-        .ok_or_else(|| format!("no current session ({} missing or unreadable)", current.display()))?;
+    let current = crate::session::try_state_dir()
+        .map_err(|e| format!("no current session ({e:#}); run ctxviz doctor"))?
+        .join("current.json");
+    let cur = CurrentSession::read_from(&current).ok_or_else(|| {
+        format!("no current session ({} missing or unreadable); run ctxviz doctor", current.display())
+    })?;
     // The agent window recorded by the status line wins: a `--type=background`
     // launch from kitty.conf has no KITTY_WINDOW_ID of its own.
     if let Some(w) = cur.kitty_window_id.clone().filter(|w| !w.is_empty()) {

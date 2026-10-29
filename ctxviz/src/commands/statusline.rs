@@ -260,6 +260,8 @@ fn record_session(p: &StatusPayload, store: Option<&Path>) {
         kitty_window_id: std::env::var("KITTY_WINDOW_ID").ok().filter(|s| !s.is_empty()),
         model: p.model_name().map(str::to_string),
         ts: CurrentSession::now_ts(),
+        cursor_dir: None,
+        ctxviz_version: None,
     };
     let _ = catch_unwind(|| current.write());
 }

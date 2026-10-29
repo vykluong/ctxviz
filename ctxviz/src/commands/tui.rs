@@ -18,8 +18,10 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> anyhow::Result<i32> {
-    // Best effort: drop pager files a previous run's overlay never cleaned up.
+    // Best effort: drop pager files a previous run's overlay never cleaned up,
+    // and state temp files a killed writer never renamed.
     crate::tui::app::sweep_stale_pager_files();
+    crate::session::sweep_stale_tmp_files();
     args.theme.init_with_probe(&probe_background);
     let s = &args.store;
     let pinned = if s.chat.is_some() || s.cwd.is_some() || s.latest { Some(s.resolve()?) } else { None };

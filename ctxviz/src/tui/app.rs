@@ -562,24 +562,10 @@ pub fn write_pager_file(dir: &Path, label: &str, text: &str) -> std::io::Result<
 }
 
 /// Delete regular `ctxviz-*.txt` files in `dir` last modified more than
-/// `max_age` ago. Best effort; returns how many were removed.
+/// `max_age` ago ([`crate::session::sweep_dir`]). Best effort; returns how many
+/// were removed.
 pub fn sweep_pager_dir(dir: &Path, max_age: Duration) -> usize {
-    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
-    let now = std::time::SystemTime::now();
-    let mut removed = 0;
-    for e in entries.flatten() {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        if !(name.starts_with("ctxviz-") && name.ends_with(".txt")) {
-            continue;
-        }
-        let Ok(meta) = std::fs::symlink_metadata(e.path()) else { continue };
-        let old = meta.modified().ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|age| age > max_age);
-        if meta.is_file() && old && std::fs::remove_file(e.path()).is_ok() {
-            removed += 1;
-        }
-    }
-    removed
+    crate::session::sweep_dir(dir, max_age, |name| name.starts_with("ctxviz-") && name.ends_with(".txt"))
 }
 
 /// Sweep stale pager files on TUI start. Does not create the state dir.

@@ -227,14 +227,77 @@ fn check_launch_arg(what: &str, arg: &str) -> Result<()> {
     Ok(())
 }
 
+/// Check one `--env` value for `kitten @ launch`: everything
+/// [`check_launch_arg`] refuses, plus `$` and surrounding whitespace, since
+/// Kitty parses `--env` like the kitty.conf `env` option, which strips the
+/// value and expands `$VAR` references in it.
+fn check_launch_env(name: &str, value: &str) -> Result<()> {
+    check_launch_arg(name, value)?;
+    if value.contains('$') || value.trim() != value {
+        bail!("refusing {name} {:?}: Kitty would expand or trim it", sanitize_single_line(value));
+    }
+    Ok(())
+}
+
 /// The window id `kitten @ launch` prints (its last non-empty line).
 fn parse_window_id(stdout: &str) -> Option<u64> {
     stdout.lines().rev().map(str::trim).find(|l| !l.is_empty())?.parse().ok().filter(|&id| id > 0)
 }
 
+/// The `kitten @` arguments for [`launch_split`]: a vsplit next to window
+/// `agent` running `<exe> tui --chat <store> [--theme ..] [--theme-file ..]`,
+/// tagged with the `ctxviz_session` user var and with each `env` pair as
+/// `--env=K=V`. Every path, value, and the cwd is checked first, so nothing
+/// Kitty would substitute or expand reaches it. `session_id` must already be
+/// [`valid_id`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn launch_args(
+    agent: u64,
+    session_id: &str,
+    exe: &Path,
+    store: &Path,
+    cwd: &Path,
+    theme: Option<&str>,
+    theme_file: Option<&Path>,
+    env: &[(&str, &str)],
+) -> Result<Vec<String>> {
+    check_launch_cwd(cwd)?;
+    let exe = exe.to_string_lossy();
+    let store = store.to_string_lossy();
+    let theme_file = theme_file.map(Path::to_string_lossy);
+    check_launch_arg("ctxviz binary path", &exe)?;
+    check_launch_arg("store path", &store)?;
+    if let Some(t) = theme {
+        check_launch_arg("theme", t)?;
+    }
+    if let Some(f) = &theme_file {
+        check_launch_arg("theme file", f)?;
+    }
+    for (k, v) in env {
+        check_launch_env(k, v)?;
+    }
+    let mut args: Vec<String> = ["launch", "--type=window", "--location=vsplit"].map(String::from).into();
+    args.extend(["--match".into(), format!("window_id:{agent}"), "--next-to".into(), format!("id:{agent}")]);
+    args.extend(["--keep-focus".into(), "--cwd".into(), cwd.to_string_lossy().into_owned()]);
+    args.extend(["--title", "ctxviz", "--var"].map(String::from));
+    args.push(format!("ctxviz_session={session_id}"));
+    args.extend(env.iter().map(|(k, v)| format!("--env={k}={v}")));
+    args.extend(["--".into(), exe.into_owned(), "tui".into(), "--chat".into(), store.into_owned()]);
+    if let Some(t) = theme {
+        args.extend(["--theme".into(), t.to_string()]);
+    }
+    if let Some(f) = theme_file {
+        args.extend(["--theme-file".into(), f.into_owned()]);
+    }
+    Ok(args)
+}
+
 /// Open `ctxviz tui --chat <store> [--theme <theme>] [--theme-file <path>]` in
 /// a vsplit next to the agent window, keeping focus on the agent. Returns the
-/// new window id.
+/// new window id. Kitty starts the split with its own environment, not ours,
+/// so the resolved Cursor and state dirs are passed as `CTXVIZ_CURSOR_DIR` and
+/// `CTXVIZ_STATE_DIR` (each only when it resolves) for the TUI to use the same
+/// dirs as this process.
 pub fn launch_split(
     k: &Kitty,
     session_id: &str,
@@ -249,48 +312,17 @@ pub fn launch_split(
     }
     check_launch_cwd(cwd)?;
     let exe = std::env::current_exe().context("locating the ctxviz binary")?;
-    let tab_match = format!("window_id:{agent}");
-    let next_to = format!("id:{agent}");
-    let var = format!("ctxviz_session={session_id}");
-    let cwd = cwd.to_string_lossy();
-    let exe = exe.to_string_lossy();
-    let store = store.to_string_lossy();
-    let theme_file = theme_file.map(Path::to_string_lossy);
-    check_launch_arg("ctxviz binary path", &exe)?;
-    check_launch_arg("store path", &store)?;
-    if let Some(t) = theme {
-        check_launch_arg("theme", t)?;
+    let cursor_dir = crate::store::try_cursor_dir().ok().map(|d| d.to_string_lossy().into_owned());
+    let state_dir = crate::session::try_state_dir().ok().map(|d| d.to_string_lossy().into_owned());
+    let mut env = Vec::new();
+    if let Some(d) = &cursor_dir {
+        env.push((crate::store::CTXVIZ_CURSOR_DIR_ENV, d.as_str()));
     }
-    if let Some(f) = &theme_file {
-        check_launch_arg("theme file", f)?;
+    if let Some(d) = &state_dir {
+        env.push((crate::session::CTXVIZ_STATE_DIR_ENV, d.as_str()));
     }
-    let mut args = vec![
-        "launch",
-        "--type=window",
-        "--location=vsplit",
-        "--match",
-        &tab_match,
-        "--next-to",
-        &next_to,
-        "--keep-focus",
-        "--cwd",
-        &cwd,
-        "--title",
-        "ctxviz",
-        "--var",
-        &var,
-        "--",
-        &exe,
-        "tui",
-        "--chat",
-        &store,
-    ];
-    if let Some(t) = theme {
-        args.extend(["--theme", t]);
-    }
-    if let Some(f) = &theme_file {
-        args.extend(["--theme-file", f]);
-    }
+    let args = launch_args(agent, session_id, &exe, store, cwd, theme, theme_file, &env)?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = remote(k, &args)?;
     parse_window_id(&out).ok_or_else(|| anyhow!("kitten @ launch: no window id in its output ({})", out.trim()))
 }
@@ -568,6 +600,30 @@ mod tests {
         assert!(check_launch_arg("store path", "/x/$y/@z").is_ok());
         assert!(check_launch_arg("store path", "@selection").is_err());
         assert!(check_launch_arg("theme", "dark\x1b]0;x\x07").is_err());
+    }
+
+    #[test]
+    fn launch_args_pass_env_pairs() {
+        let env = [("CTXVIZ_CURSOR_DIR", "/h/cli/.cursor"), ("CTXVIZ_STATE_DIR", "/h/cli/.cursor/ctxviz")];
+        let (exe, store, cwd) = (Path::new("/bin/ctxviz"), Path::new("/s/store.db"), Path::new("/w"));
+        let args = launch_args(7, "abc", exe, store, cwd, Some("dark"), None, &env).unwrap();
+        let dash = args.iter().position(|a| a == "--").unwrap();
+        let envs: Vec<&str> = args[..dash].iter().map(String::as_str).filter(|a| a.starts_with("--env=")).collect();
+        assert_eq!(envs, ["--env=CTXVIZ_CURSOR_DIR=/h/cli/.cursor", "--env=CTXVIZ_STATE_DIR=/h/cli/.cursor/ctxviz"]);
+        assert_eq!(&args[dash..], ["--", "/bin/ctxviz", "tui", "--chat", "/s/store.db", "--theme", "dark"]);
+        for want in ["window_id:7", "id:7", "/w", "ctxviz_session=abc"] {
+            assert!(args[..dash].iter().any(|a| a == want), "{want}: {args:?}");
+        }
+        assert!(launch_args(7, "abc", exe, store, cwd, None, None, &[])
+            .unwrap()
+            .iter()
+            .all(|a| !a.starts_with("--env")));
+        for bad in ["@selection", "/a/$HOME", " /lead", "/trail ", "/a\nb", "/a\x1bb"] {
+            let err = launch_args(7, "abc", exe, store, cwd, None, None, &[("CTXVIZ_STATE_DIR", bad)]).unwrap_err();
+            assert!(format!("{err}").contains("CTXVIZ_STATE_DIR"), "{bad:?}: {err}");
+            assert!(!format!("{err}").contains('\x1b'));
+        }
+        assert!(launch_args(7, "abc", exe, store, Path::new("rel"), None, None, &env).is_err());
     }
 
     #[test]

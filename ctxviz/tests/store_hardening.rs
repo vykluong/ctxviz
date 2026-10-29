@@ -254,6 +254,38 @@ fn state_files_are_private_and_capped() {
 }
 
 #[test]
+fn current_json_write_leaves_no_tmp() {
+    // `ctxviz tui` needs a terminal, so this calls the sweep it runs on start.
+    let _g = env_lock();
+    let root = TempDir::new("hardening-current-tmp");
+    let state = root.0.join("state");
+    let _env = EnvVar::set("CTXVIZ_STATE_DIR", Some(&state));
+    let tmp_files = || -> Vec<String> {
+        let names = std::fs::read_dir(&state).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned());
+        names.filter(|n| n.starts_with(".current.json.tmp.")).collect()
+    };
+    let cur = CurrentSession { session_id: "abc".into(), ts: 1, ..Default::default() };
+    for _ in 0..3 {
+        cur.write().unwrap();
+    }
+    assert_eq!(tmp_files(), Vec::<String>::new());
+    assert_eq!(CurrentSession::read(), Some(cur));
+
+    // Leftovers of a writer killed before its rename: only the stale one goes.
+    let stale = state.join(".current.json.tmp.1.2.0");
+    let fresh = state.join(".current.json.tmp.1.3.1");
+    for p in [&stale, &fresh] {
+        std::fs::write(p, "{}").unwrap();
+    }
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 + 60);
+    std::fs::File::options().write(true).open(&stale).unwrap().set_modified(past).unwrap();
+    assert_eq!(session::sweep_stale_tmp_files(), 1);
+    assert!(!stale.exists());
+    assert!(fresh.exists());
+    assert!(state.join("current.json").exists());
+}
+
+#[test]
 fn missing_home_is_an_error() {
     let _g = env_lock();
     let _only = home_only();
