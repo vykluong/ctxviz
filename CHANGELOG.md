@@ -6,9 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0-rc.1] - 2026-10-28
+
+### Added
+
+- `CTXVIZ_CURSOR_DIR` overrides the Cursor config dir for ctxviz alone. Precedence: `$CTXVIZ_CURSOR_DIR`, then `$CURSOR_CONFIG_DIR`, then `$XDG_CONFIG_HOME/cursor`, then `~/.cursor`. A blank value counts as unset, and a relative path is an error.
+- The status line searches every candidate Cursor dir for its session id, so it finds its store even when the shell environment and the agent disagree on the config dir.
+- `ctxviz doctor` runs setup checks before the store report and prints `OK:`, `INFO:`, and `WARN:` lines for the version, the resolved dirs, the `statusLine` wiring in `cli-config.json`, chats, `current.json`, stale temp files, and Kitty. It exits 1 only when a `WARN:` line was printed.
+- `--version` includes build info: `ctxviz 0.2.0-rc.1 (<commit>)`, with a `-dirty` suffix for a modified checkout, or `(unknown)` when built outside git.
+- `current.json` records `cursor_dir` (the dir where the status line found the store) and `ctxviz_version`.
+- `ctxviz open` passes the resolved Cursor and state dirs to the Kitty split, so the TUI uses the same dirs as the shell that opened it.
+- `ctxviz tui` removes stale `.current.json.tmp.*` files older than one hour from the state dir when it starts.
+
+### Changed
+
+- `current.json` is written without fsync. Rename atomicity is enough for a cache rewritten on every tick, and the fsync was slow enough that the host killed the status line mid-write and left temp files behind.
+
 ### Fixed
 
-- Chats and the default state dir now follow the Cursor CLI config dir (`$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`) instead of always using `~/.cursor`. With a relocated config dir, the status line used to show only the payload row (no breakdown or trend) and created `~/.cursor/ctxviz`, and the TUI and `snapshot` could not find chats or picked a stale one with `--latest`. A relative path in either variable is rejected.
+- Chats and the default state dir follow the Cursor CLI config dir instead of always using `~/.cursor`. With a relocated config dir, the status line used to show only the payload row (no breakdown or trend) and created `~/.cursor/ctxviz`, and the TUI and `snapshot` could not find chats or picked a stale one with `--latest`.
 - `ctxviz doctor` prints the resolved config, chats, and state dirs.
 
 ## [0.1.0] - 2026-10-21
@@ -35,5 +51,6 @@ Initial public release.
 - State is written only under `~/.cursor/ctxviz` (or `$CTXVIZ_STATE_DIR`, which moves every state file), with directories 0700 and files 0600. Stdin payload, theme file, and state file reads are capped. Caveat: opening a WAL-mode store still makes SQLite create `store.db-wal` and `store.db-shm` next to it.
 - No network access and no telemetry.
 
-[Unreleased]: https://github.com/vykluong/ctxviz/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/vykluong/ctxviz/compare/v0.2.0-rc.1...HEAD
+[0.2.0-rc.1]: https://github.com/vykluong/ctxviz/compare/v0.1.0...v0.2.0-rc.1
 [0.1.0]: https://github.com/vykluong/ctxviz/releases/tag/v0.1.0

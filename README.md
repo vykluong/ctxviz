@@ -35,7 +35,7 @@ If you prefer not to pipe a script into your shell, the rustup [other installati
 git clone https://github.com/vykluong/ctxviz.git   # or git@github.com:vykluong/ctxviz.git over SSH
 cd ctxviz
 cargo install --path ctxviz --locked
-ctxviz --version        # ctxviz 0.1.0
+ctxviz --version        # ctxviz 0.2.0-rc.1 (<commit>)
 ```
 
 This puts `ctxviz` in `~/.cargo/bin`. Make sure that directory is on your `PATH` (rustup adds it for you).

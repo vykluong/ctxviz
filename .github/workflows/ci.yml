@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -49,7 +50,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ctxviz
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -67,7 +68,36 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ctxviz
-      - run: cargo test --all-targets
+      - run: cargo test --all-targets --locked
+
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain
+        run: rustup toolchain install
+      # CHANGELOG.md needs a heading for the package version, and a tag must
+      # match it (v0.2.0-rc.1 for 0.2.0-rc.1).
+      - name: Check version, CHANGELOG, and tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "package version: $version"
+          if ! grep -qF "## [$version]" ../CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::missing a '## [$version]' heading"
+            exit 1
+          fi
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag_version=${GITHUB_REF_NAME#v}
+            if [ "$tag_version" != "$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match package version $version"
+              exit 1
+            fi
+          fi
 
   deny:
     name: cargo-deny
