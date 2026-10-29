@@ -239,6 +239,8 @@ pub const CTXVIZ_CURSOR_DIR_ENV: &str = "CTXVIZ_CURSOR_DIR";
 /// Where the Cursor CLI config dir came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorDirSource {
+    /// `$CTXVIZ_CURSOR_DIR`.
+    CtxvizEnv,
     /// `$CURSOR_CONFIG_DIR`.
     ConfigDirEnv,
     /// `$XDG_CONFIG_HOME/cursor`.
@@ -250,6 +252,7 @@ pub enum CursorDirSource {
 impl std::fmt::Display for CursorDirSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            CursorDirSource::CtxvizEnv => "$CTXVIZ_CURSOR_DIR",
             CursorDirSource::ConfigDirEnv => "$CURSOR_CONFIG_DIR",
             CursorDirSource::XdgConfigHome => "$XDG_CONFIG_HOME/cursor",
             CursorDirSource::Home => "~/.cursor",
@@ -257,36 +260,85 @@ impl std::fmt::Display for CursorDirSource {
     }
 }
 
-/// The Cursor CLI config dir, resolved the way the CLI does it:
-/// `$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`.
-/// A value that is empty or only whitespace counts as unset. Unlike the CLI,
-/// a relative path is an error: the status line runs in the workspace, so it
-/// would resolve somewhere else.
+/// The Cursor CLI config dir: `$CTXVIZ_CURSOR_DIR` if set, else resolved the
+/// way the CLI does it: `$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`,
+/// else `~/.cursor`. A value that is empty or only whitespace counts as unset.
+/// Unlike the CLI, a relative path is an error: the status line runs in the
+/// workspace, so it would resolve somewhere else.
 pub fn try_cursor_dir() -> Result<PathBuf> {
     Ok(try_cursor_dir_with_source()?.0)
 }
 
 /// [`try_cursor_dir`] and which variable chose it.
 pub fn try_cursor_dir_with_source() -> Result<(PathBuf, CursorDirSource)> {
-    resolve_cursor_dir(std::env::var_os(CURSOR_CONFIG_DIR_ENV), std::env::var_os("XDG_CONFIG_HOME"), home)
+    resolve_cursor_dir(
+        std::env::var_os(CTXVIZ_CURSOR_DIR_ENV),
+        std::env::var_os(CURSOR_CONFIG_DIR_ENV),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        home,
+    )
+}
+
+/// A variable's value as a path, or `None` when unset, empty, or only whitespace.
+fn set_path(v: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    v.filter(|v| !v.to_string_lossy().trim().is_empty()).map(PathBuf::from)
 }
 
 /// [`try_cursor_dir_with_source`] over explicit values, for tests.
 pub fn resolve_cursor_dir(
+    ctxviz_env: Option<std::ffi::OsString>,
     config_dir: Option<std::ffi::OsString>,
     xdg_config_home: Option<std::ffi::OsString>,
     home: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<(PathBuf, CursorDirSource)> {
-    let set = |v: Option<std::ffi::OsString>| v.filter(|v| !v.to_string_lossy().trim().is_empty()).map(PathBuf::from);
-    let (dir, source) = match (set(config_dir), set(xdg_config_home)) {
-        (Some(d), _) => (d, CursorDirSource::ConfigDirEnv),
-        (None, Some(x)) => (x.join("cursor"), CursorDirSource::XdgConfigHome),
-        (None, None) => (home()?.join(".cursor"), CursorDirSource::Home),
+    let (dir, source) = match (set_path(ctxviz_env), set_path(config_dir), set_path(xdg_config_home)) {
+        (Some(d), _, _) => (d, CursorDirSource::CtxvizEnv),
+        (None, Some(d), _) => (d, CursorDirSource::ConfigDirEnv),
+        (None, None, Some(x)) => (x.join("cursor"), CursorDirSource::XdgConfigHome),
+        (None, None, None) => (home()?.join(".cursor"), CursorDirSource::Home),
     };
     if !dir.is_absolute() {
         bail!("{source} is not an absolute path: {}", dir.display());
     }
     Ok((dir, source))
+}
+
+/// Every Cursor CLI config dir the variables name, in precedence order and
+/// deduplicated: the [`resolve_cursor_dir`] result first (when it resolves),
+/// then the other absolute candidates. Blank and relative values, and
+/// `~/.cursor` without a usable home, are skipped silently. The status line
+/// searches these for its session, since the shell and the agent may disagree
+/// on the dir.
+pub fn candidate_cursor_dirs(
+    ctxviz_env: Option<std::ffi::OsString>,
+    config_dir: Option<std::ffi::OsString>,
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: impl FnOnce() -> Result<PathBuf>,
+) -> Vec<(PathBuf, CursorDirSource)> {
+    let all = [
+        (set_path(ctxviz_env), CursorDirSource::CtxvizEnv),
+        (set_path(config_dir), CursorDirSource::ConfigDirEnv),
+        (set_path(xdg_config_home).map(|x| x.join("cursor")), CursorDirSource::XdgConfigHome),
+        (home().ok().map(|h| h.join(".cursor")), CursorDirSource::Home),
+    ];
+    let mut out: Vec<(PathBuf, CursorDirSource)> = Vec::new();
+    for (dir, source) in all {
+        let Some(dir) = dir.filter(|d| d.is_absolute()) else { continue };
+        if !out.iter().any(|(d, _)| *d == dir) {
+            out.push((dir, source));
+        }
+    }
+    out
+}
+
+/// [`candidate_cursor_dirs`] from the process environment.
+pub fn candidate_cursor_dirs_from_env() -> Vec<(PathBuf, CursorDirSource)> {
+    candidate_cursor_dirs(
+        std::env::var_os(CTXVIZ_CURSOR_DIR_ENV),
+        std::env::var_os(CURSOR_CONFIG_DIR_ENV),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        home,
+    )
 }
 
 /// `<cursor dir>/chats`, or an error when no cursor dir is usable.
@@ -352,7 +404,16 @@ pub fn try_store_for_agent(agent_id: &str) -> Result<Option<PathBuf>> {
     if !text::valid_id(agent_id) {
         bail!("invalid agent id {agent_id:?}");
     }
-    Ok(subdirs(&try_chats_dir()?).into_iter().map(|d| d.join(agent_id).join("store.db")).find(|p| p.is_file()))
+    Ok(store_for_agent_in(&try_chats_dir()?, agent_id))
+}
+
+/// `<chats>/*/<agent_id>/store.db` that is a file. An id that is not
+/// [`text::valid_id`] finds nothing.
+pub fn store_for_agent_in(chats: &Path, agent_id: &str) -> Option<PathBuf> {
+    if !text::valid_id(agent_id) {
+        return None;
+    }
+    subdirs(chats).into_iter().map(|d| d.join(agent_id).join("store.db")).find(|p| p.is_file())
 }
 
 /// Python `find_store`: explicit path, agent id (glob `*/<id>/store.db`),
@@ -376,7 +437,8 @@ pub fn find_store(chat: Option<&str>, cwd: &Path, latest: bool) -> Result<PathBu
     match newest(stores_in(&project)) {
         Some(p) => Ok(p),
         None => bail!(
-            "no cursor-agent chats for {} (looked in {}); pass --cwd <workspace> or --latest",
+            "no cursor-agent chats for {} (looked in {}); pass --cwd <workspace> or --latest; \
+             set CTXVIZ_CURSOR_DIR if the agent uses another config dir (ctxviz doctor shows the dirs)",
             cwd.display(),
             project.display()
         ),
@@ -388,13 +450,23 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
-    fn resolve(config: Option<&str>, xdg: Option<&str>) -> Result<(PathBuf, CursorDirSource)> {
-        resolve_cursor_dir(config.map(OsString::from), xdg.map(OsString::from), || Ok(PathBuf::from("/home/u")))
+    type Dirs = Vec<(PathBuf, CursorDirSource)>;
+
+    fn os(v: Option<&str>) -> Option<OsString> {
+        v.map(OsString::from)
+    }
+
+    fn resolve(ctxviz: Option<&str>, config: Option<&str>, xdg: Option<&str>) -> Result<(PathBuf, CursorDirSource)> {
+        resolve_cursor_dir(os(ctxviz), os(config), os(xdg), || Ok(PathBuf::from("/home/u")))
+    }
+
+    fn candidates(ctxviz: Option<&str>, config: Option<&str>, xdg: Option<&str>) -> Dirs {
+        candidate_cursor_dirs(os(ctxviz), os(config), os(xdg), || Ok(PathBuf::from("/home/u")))
     }
 
     #[test]
     fn cursor_dir_follows_the_cli_order() {
-        let ok = |c, x| resolve(c, x).unwrap();
+        let ok = |c, x| resolve(None, c, x).unwrap();
         assert_eq!(ok(None, None), (PathBuf::from("/home/u/.cursor"), CursorDirSource::Home));
         assert_eq!(ok(None, Some("/xdg")), (PathBuf::from("/xdg/cursor"), CursorDirSource::XdgConfigHome));
         assert_eq!(ok(Some("/cfg"), Some("/xdg")), (PathBuf::from("/cfg"), CursorDirSource::ConfigDirEnv));
@@ -404,18 +476,67 @@ mod tests {
     }
 
     #[test]
+    fn ctxviz_cursor_dir_wins() {
+        let ok = |t, c, x| resolve(t, c, x).unwrap();
+        let ctx = (PathBuf::from("/ctx"), CursorDirSource::CtxvizEnv);
+        assert_eq!(ok(Some("/ctx"), Some("/cfg"), Some("/xdg")), ctx);
+        assert_eq!(ok(Some("/ctx"), None, None), ctx);
+        assert_eq!(CursorDirSource::CtxvizEnv.to_string(), "$CTXVIZ_CURSOR_DIR");
+        // Blank falls through to the next variable.
+        assert_eq!(ok(Some(" "), Some("/cfg"), None), (PathBuf::from("/cfg"), CursorDirSource::ConfigDirEnv));
+        assert_eq!(ok(Some(""), None, Some("/xdg")).1, CursorDirSource::XdgConfigHome);
+        assert_eq!(ok(Some("\t"), None, None).1, CursorDirSource::Home);
+    }
+
+    #[test]
     fn cursor_dir_rejects_relative_paths() {
-        let err = format!("{:#}", resolve(Some("rel/cfg"), None).unwrap_err());
+        let err = format!("{:#}", resolve(None, Some("rel/cfg"), None).unwrap_err());
         assert!(err.contains("$CURSOR_CONFIG_DIR is not an absolute path"), "{err}");
-        let err = format!("{:#}", resolve(None, Some("rel")).unwrap_err());
+        let err = format!("{:#}", resolve(None, None, Some("rel")).unwrap_err());
         assert!(err.contains("$XDG_CONFIG_HOME/cursor is not an absolute path"), "{err}");
+        // A relative override is an error even when the others are usable.
+        let err = format!("{:#}", resolve(Some("rel"), Some("/cfg"), None).unwrap_err());
+        assert!(err.contains("$CTXVIZ_CURSOR_DIR is not an absolute path: rel"), "{err}");
     }
 
     #[test]
     fn cursor_dir_needs_home_only_as_the_fallback() {
         let no_home = || -> Result<PathBuf> { bail!("HOME is not set") };
-        assert!(resolve_cursor_dir(None, None, no_home).is_err());
-        let (dir, _) = resolve_cursor_dir(Some("/cfg".into()), None, no_home).unwrap();
+        assert!(resolve_cursor_dir(None, None, None, no_home).is_err());
+        let (dir, _) = resolve_cursor_dir(None, Some("/cfg".into()), None, no_home).unwrap();
         assert_eq!(dir, PathBuf::from("/cfg"));
+        let (dir, _) = resolve_cursor_dir(Some("/ctx".into()), None, None, no_home).unwrap();
+        assert_eq!(dir, PathBuf::from("/ctx"));
+        // Without a home, `~/.cursor` is not a candidate.
+        let dirs = candidate_cursor_dirs(None, Some("/cfg".into()), None, no_home);
+        assert_eq!(dirs, vec![(PathBuf::from("/cfg"), CursorDirSource::ConfigDirEnv)]);
+    }
+
+    #[test]
+    fn candidate_dirs_order_and_dedup() {
+        use CursorDirSource::*;
+        let p = PathBuf::from;
+        let all = vec![(p("/ctx"), CtxvizEnv), (p("/cfg"), ConfigDirEnv), (p("/xdg/cursor"), XdgConfigHome)];
+        let mut with_home = all.clone();
+        with_home.push((p("/home/u/.cursor"), Home));
+        assert_eq!(candidates(Some("/ctx"), Some("/cfg"), Some("/xdg")), with_home);
+        assert_eq!(candidates(None, None, None), vec![(p("/home/u/.cursor"), Home)]);
+        // The first source naming a dir keeps it; equal paths (a trailing
+        // slash included) appear once.
+        assert_eq!(
+            candidates(Some("/home/u/.cursor/"), Some("/xdg/cursor"), Some("/xdg")),
+            vec![(p("/home/u/.cursor"), CtxvizEnv), (p("/xdg/cursor"), ConfigDirEnv)]
+        );
+        // Blank and relative values are skipped silently.
+        assert_eq!(
+            candidates(Some(" "), Some("rel"), Some("/xdg")),
+            vec![(p("/xdg/cursor"), XdgConfigHome), (p("/home/u/.cursor"), Home)]
+        );
+        // The resolved dir always comes first.
+        for (t, c, x) in
+            [(Some("/ctx"), Some("/cfg"), None), (Some(""), Some("/cfg"), Some("/xdg")), (None, None, Some("/xdg"))]
+        {
+            assert_eq!(candidates(t, c, x)[0], resolve(t, c, x).unwrap(), "{t:?} {c:?} {x:?}");
+        }
     }
 }

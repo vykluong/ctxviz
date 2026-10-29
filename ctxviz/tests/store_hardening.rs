@@ -2,10 +2,12 @@
 //! `meta.agentId`, views posing as tables, deep protobuf groups, random bytes,
 //! state file permissions, and SQLite sidecar behavior.
 //!
-//! `CTXVIZ_STATE_DIR`, `HOME`, `CURSOR_CONFIG_DIR` and `XDG_CONFIG_HOME` are
-//! process-global, so every test that reads or sets them holds `ENV_LOCK` and
-//! uses its own unique temp dir. Tests that rely on `HOME` clear the other two
-//! with [`home_only`], since a developer shell may export them.
+//! `CTXVIZ_STATE_DIR`, `HOME`, `CTXVIZ_CURSOR_DIR`, `CURSOR_CONFIG_DIR` and
+//! `XDG_CONFIG_HOME` are process-global, so every test that reads or sets them
+//! holds `ENV_LOCK` and uses its own unique temp dir. Tests that rely on
+//! `HOME` clear the cursor dir variables with [`home_only`] (or start from
+//! [`bare_env`]), since a developer shell may export them. Child processes
+//! get the same variables removed.
 
 mod common;
 
@@ -49,10 +51,21 @@ impl Drop for EnvVar {
     }
 }
 
-/// Clears `CURSOR_CONFIG_DIR` and `XDG_CONFIG_HOME` so `HOME` alone picks
-/// the cursor dir. Hold the guards for the whole test.
-fn home_only() -> [EnvVar; 2] {
-    [EnvVar::set("CURSOR_CONFIG_DIR", None), EnvVar::set("XDG_CONFIG_HOME", None)]
+/// The cursor dir variables a developer shell may export.
+const CURSOR_DIR_VARS: [&str; 3] = ["CTXVIZ_CURSOR_DIR", "CURSOR_CONFIG_DIR", "XDG_CONFIG_HOME"];
+
+/// Clears `CTXVIZ_CURSOR_DIR`, `CURSOR_CONFIG_DIR` and `XDG_CONFIG_HOME` so
+/// `HOME` alone picks the cursor dir. Hold the guards for the whole test.
+fn home_only() -> [EnvVar; 3] {
+    CURSOR_DIR_VARS.map(|k| EnvVar::set(k, None))
+}
+
+/// `HOME` set to `home`, the cursor dir variables and `CTXVIZ_STATE_DIR`
+/// cleared: the default layout under a temp home. Hold the guards for the
+/// whole test.
+fn bare_env(home: &Path) -> [EnvVar; 5] {
+    let [a, b, c] = home_only();
+    [EnvVar::set("HOME", Some(home)), EnvVar::set("CTXVIZ_STATE_DIR", None), a, b, c]
 }
 
 /// Root blob with one message id, token details, and createdAt.
@@ -311,6 +324,7 @@ fn cursor_config_dir_overrides_home() {
     let root = TempDir::new("hardening-cursor-dir");
     let cfg = root.0.join("cfg");
     let _state = EnvVar::set("CTXVIZ_STATE_DIR", None);
+    let _ctxviz = EnvVar::set("CTXVIZ_CURSOR_DIR", None);
     let _xdg = EnvVar::set("XDG_CONFIG_HOME", Some(&root.0.join("xdg")));
     {
         // CURSOR_CONFIG_DIR wins over XDG_CONFIG_HOME and needs no HOME.
@@ -349,6 +363,7 @@ fn missing_home_messages_hide_placeholder() {
         .arg("open")
         .env_remove("HOME")
         .env_remove("CTXVIZ_STATE_DIR")
+        .env_remove("CTXVIZ_CURSOR_DIR")
         .env_remove("CURSOR_CONFIG_DIR")
         .env_remove("XDG_CONFIG_HOME")
         .env("KITTY_LISTEN_ON", "unix:/nonexistent/ctxviz-test.sock")
@@ -391,6 +406,7 @@ fn statusline_renders_payload_row_for_corrupt_root() {
         .args(["statusline", "--theme", "none"])
         .env("HOME", &home)
         .env("CTXVIZ_STATE_DIR", root.0.join("state"))
+        .env_remove("CTXVIZ_CURSOR_DIR")
         .env_remove("CURSOR_CONFIG_DIR")
         .env_remove("XDG_CONFIG_HOME")
         .env("CTXVIZ_NO_GIT", "1")
@@ -416,7 +432,7 @@ fn statusline_renders_payload_row_for_corrupt_root() {
 fn run_statusline(payload: &serde_json::Value, env: &[(&str, Option<&Path>)]) -> (Option<i32>, String, String) {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ctxviz"));
     cmd.args(["statusline", "--theme", "none", "--rows", "1"]).env("CTXVIZ_NO_GIT", "1").env_remove("KITTY_LISTEN_ON");
-    for key in ["CTXVIZ_STATE_DIR", "CURSOR_CONFIG_DIR", "XDG_CONFIG_HOME"] {
+    for key in CURSOR_DIR_VARS.into_iter().chain(["CTXVIZ_STATE_DIR"]) {
         cmd.env_remove(key);
     }
     for (k, v) in env {
@@ -476,6 +492,116 @@ fn statusline_follows_relocated_cursor_dir() {
         assert_eq!(current.store.as_deref(), Some(store_dir.join("store.db").as_path()));
         assert!(!home.join(".cursor").exists(), "{var}: created ~/.cursor");
     }
+}
+
+/// A store for `agent_id` at `<cursor_dir>/chats/<project>/<agent_id>/store.db`.
+fn make_store_in(cursor_dir: &Path, project: &str, agent_id: &str) -> PathBuf {
+    let dir = cursor_dir.join("chats").join(project).join(agent_id);
+    std::fs::create_dir_all(&dir).unwrap();
+    make_store(&dir, agent_id)
+}
+
+#[test]
+fn ctxviz_cursor_dir_overrides_cursor_config_dir() {
+    let _g = env_lock();
+    let root = TempDir::new("hardening-ctxviz-cursor-dir");
+    let _env = bare_env(&root.0.join("home"));
+    let (a, b) = (root.0.join("a"), root.0.join("b"));
+    let _cfg = EnvVar::set("CURSOR_CONFIG_DIR", Some(&b));
+    let in_a = make_store_in(&a, "proj", "agent-1");
+    let in_b = make_store_in(&b, "proj", "agent-1");
+    {
+        let _ctxviz = EnvVar::set("CTXVIZ_CURSOR_DIR", Some(&a));
+        assert_eq!(store::try_cursor_dir_with_source().unwrap(), (a.clone(), store::CursorDirSource::CtxvizEnv));
+        assert_eq!(store::try_chats_dir().unwrap(), a.join("chats"));
+        assert_eq!(session::try_state_dir().unwrap(), a.join("ctxviz"));
+        assert_eq!(store::store_for_agent("agent-1"), Some(in_a.clone()));
+        assert_eq!(store::find_store(None, Path::new("/"), true).unwrap(), in_a);
+        let err = format!("{:#}", store::find_store(None, Path::new("/elsewhere"), false).unwrap_err());
+        assert!(err.contains("set CTXVIZ_CURSOR_DIR if the agent uses another config dir"), "{err}");
+    }
+    {
+        // Blank counts as unset.
+        let _ctxviz = EnvVar::set("CTXVIZ_CURSOR_DIR", Some(Path::new(" ")));
+        assert_eq!(store::try_cursor_dir_with_source().unwrap(), (b.clone(), store::CursorDirSource::ConfigDirEnv));
+        assert_eq!(session::try_state_dir().unwrap(), b.join("ctxviz"));
+        assert_eq!(store::store_for_agent("agent-1"), Some(in_b.clone()));
+        assert_eq!(store::find_store(None, Path::new("/"), true).unwrap(), in_b);
+    }
+    {
+        // A relative value is an error naming the variable, not a fallback.
+        let _ctxviz = EnvVar::set("CTXVIZ_CURSOR_DIR", Some(Path::new("rel/a")));
+        let err = format!("{:#}", store::try_chats_dir().unwrap_err());
+        assert!(err.contains("$CTXVIZ_CURSOR_DIR is not an absolute path"), "{err}");
+        assert!(session::try_state_dir().is_err());
+        assert!(store::try_store_for_agent("agent-1").is_err());
+        assert!(store::find_store(None, Path::new("/"), true).is_err());
+        assert!(CurrentSession { session_id: "abc".into(), ..Default::default() }.write().is_err());
+        assert!(!Path::new("rel").exists());
+        // The candidate list skips it and keeps the others.
+        let dirs: Vec<PathBuf> = store::candidate_cursor_dirs_from_env().into_iter().map(|(d, _)| d).collect();
+        assert_eq!(dirs, vec![b.clone(), root.0.join("home/.cursor")]);
+    }
+}
+
+#[test]
+fn statusline_finds_store_in_other_candidate_dir() {
+    // The agent runs with CURSOR_CONFIG_DIR=B while CTXVIZ_CURSOR_DIR=A: the
+    // status line still finds the session's store under B (by the direct path,
+    // and by the exact-id scan when the cwd hash does not match) and records
+    // it in A's state dir.
+    let root = TempDir::new("hardening-statusline-candidates");
+    let home = root.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let (a, b) = (root.0.join("a"), root.0.join("b"));
+    let cwd = root.0.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let direct = make_store_in(&b, &store::project_hash(&cwd), "direct-session");
+    let scanned = make_store_in(&b, "other-project", "scanned-session");
+    for (sid, expected) in [("direct-session", &direct), ("scanned-session", &scanned)] {
+        let payload = serde_json::json!({
+            "session_id": sid,
+            "cwd": cwd,
+            "context_window": { "used_percentage": 42, "context_window_size": 200000 },
+        });
+        let env = [("HOME", Some(home.as_path())), ("CTXVIZ_CURSOR_DIR", Some(&a)), ("CURSOR_CONFIG_DIR", Some(&b))];
+        let (code, stdout, stderr) = run_statusline(&payload, &env);
+        assert_eq!(code, Some(0), "{sid}: stderr: {stderr}");
+        assert!(stdout.contains("1%"), "{sid}: store not read: {stdout}");
+        assert!(!stdout.contains("84K"), "{sid}: payload-only row: {stdout}");
+        let current = CurrentSession::read_from(&a.join("ctxviz/current.json")).expect("current.json under A");
+        assert_eq!(current.session_id, sid);
+        assert_eq!(current.store.as_ref(), Some(expected));
+        assert_eq!(current.cursor_dir.as_ref(), Some(&b));
+        assert_eq!(current.ctxviz_version.as_deref(), Some(ctxviz::build_info::VERSION));
+        assert!(!b.join("ctxviz").exists(), "{sid}: state written under B");
+        assert!(!home.join(".cursor").exists(), "{sid}: created ~/.cursor");
+    }
+}
+
+#[test]
+fn followed_store_follows_override() {
+    // An unpinned TUI started from a shell whose CURSOR_CONFIG_DIR is B
+    // follows A's current.json, and without one, A's newest store.
+    let _g = env_lock();
+    let root = TempDir::new("hardening-followed-store");
+    let _env = bare_env(&root.0.join("home"));
+    let (a, b) = (root.0.join("a"), root.0.join("b"));
+    let _cfg = EnvVar::set("CURSOR_CONFIG_DIR", Some(&b));
+    let _ctxviz = EnvVar::set("CTXVIZ_CURSOR_DIR", Some(&a));
+    let in_a = make_store_in(&a, "proj", "agent-a");
+    let in_b = make_store_in(&b, "proj", "agent-b");
+    assert_eq!(ctxviz::tui::watch::followed_store(), Some(in_a.clone()));
+
+    let record = |dir: &Path, sid: &str, store: &Path| {
+        let cur =
+            CurrentSession { session_id: sid.into(), store: Some(store.to_path_buf()), ts: 1, ..Default::default() };
+        cur.write_to(&dir.join("ctxviz/current.json")).unwrap();
+    };
+    let other_a = make_store_in(&a, "proj", "agent-a2");
+    record(&a, "agent-a2", &other_a);
+    record(&b, "agent-b", &in_b);
+    assert_eq!(ctxviz::tui::watch::followed_store(), Some(other_a));
 }
 
 #[test]

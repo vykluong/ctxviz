@@ -2,7 +2,8 @@
 """Cursor CLI "Context Usage" report, ported from the Cursor desktop app.
 
 Reads a cursor-agent chat store (<cursor dir>/chats/<md5(cwd)>/<agentId>/store.db,
-where the cursor dir is $CURSOR_CONFIG_DIR, $XDG_CONFIG_HOME/cursor, or ~/.cursor):
+where the cursor dir is $CTXVIZ_CURSOR_DIR, $CURSOR_CONFIG_DIR, $XDG_CONFIG_HOME/cursor,
+or ~/.cursor):
 
   * Totals and category breakdown come from the server-computed
     agent.v1.ConversationTokenDetails.breakdown persisted in the latest root
@@ -33,18 +34,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pb import group  # noqa: E402
 
 def cursor_dir():
-    """The Cursor CLI config dir, resolved like the CLI: $CURSOR_CONFIG_DIR,
-    else $XDG_CONFIG_HOME/cursor, else ~/.cursor. Blank values count as unset."""
-    config = os.environ.get("CURSOR_CONFIG_DIR", "")
-    if config.strip():
-        return config
-    xdg = os.environ.get("XDG_CONFIG_HOME", "")
-    if xdg.strip():
-        return os.path.join(xdg, "cursor")
+    """The Cursor CLI config dir, as ctxviz resolves it: $CTXVIZ_CURSOR_DIR,
+    else (like the CLI) $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor,
+    else ~/.cursor. Blank values count as unset; a relative value exits with
+    an error naming the variable."""
+    for var, suffix in (("CTXVIZ_CURSOR_DIR", ""), ("CURSOR_CONFIG_DIR", ""), ("XDG_CONFIG_HOME", "cursor")):
+        value = os.environ.get(var, "")
+        if value.strip():
+            path = os.path.join(value, suffix) if suffix else value
+            if not os.path.isabs(path):
+                name = f"${var}/{suffix}" if suffix else f"${var}"
+                sys.exit(f"{name} is not an absolute path: {path}")
+            return path
     return os.path.expanduser("~/.cursor")
 
 
-CHATS_DIR = os.path.join(cursor_dir(), "chats")
+def chats_dir():
+    return os.path.join(cursor_dir(), "chats")
 
 # Category ids and order match agent.v1.PromptTokenBreakdownCategory ids.
 CATEGORIES = [
@@ -88,21 +94,23 @@ def last_write(store):
 def find_store(chat, cwd, latest=False):
     if chat and os.path.isfile(chat):
         return chat
+    chats = chats_dir()
     if chat:
-        hits = glob.glob(os.path.join(CHATS_DIR, "*", chat, "store.db"))
+        hits = glob.glob(os.path.join(chats, "*", chat, "store.db"))
         if not hits:
             sys.exit(f"no chat store for agent id {chat}")
         return hits[0]
     if latest:
-        stores = glob.glob(os.path.join(CHATS_DIR, "*", "*", "store.db"))
+        stores = glob.glob(os.path.join(chats, "*", "*", "store.db"))
         if not stores:
-            sys.exit(f"no cursor-agent chats in {CHATS_DIR}")
+            sys.exit(f"no cursor-agent chats in {chats}")
         return max(stores, key=last_write)
     project = hashlib.md5(os.path.abspath(cwd).encode()).hexdigest()
-    stores = glob.glob(os.path.join(CHATS_DIR, project, "*", "store.db"))
+    stores = glob.glob(os.path.join(chats, project, "*", "store.db"))
     if not stores:
-        sys.exit(f"no cursor-agent chats for {cwd} (looked in {CHATS_DIR}/{project}); "
-                 "pass --cwd <workspace> or --latest")
+        sys.exit(f"no cursor-agent chats for {cwd} (looked in {chats}/{project}); "
+                 "pass --cwd <workspace> or --latest; set CTXVIZ_CURSOR_DIR if the agent "
+                 "uses another config dir (ctxviz doctor shows the dirs)")
     return max(stores, key=last_write)
 
 

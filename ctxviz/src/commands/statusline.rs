@@ -84,18 +84,21 @@ pub enum Lookup {
     Undecodable(anyhow::Error),
 }
 
-/// `<cursor dir>/chats/<md5(abs cwd)>/<session_id>/store.db`, else the exact
-/// session id under any project dir. A path that exists but is not a file is
-/// still returned so opening it fails as an error, not as "missing".
-pub fn resolve_store(p: &StatusPayload) -> Option<PathBuf> {
+/// The session's store and the Cursor CLI config dir it was found in. For
+/// each of [`store::candidate_cursor_dirs_from_env`] (the resolved dir first):
+/// `<dir>/chats/<md5(abs cwd)>/<session_id>/store.db`, else the exact session
+/// id under any project dir of `<dir>/chats`. Searching every candidate keeps
+/// the row working when the agent's `CURSOR_CONFIG_DIR` differs from the one
+/// ctxviz resolves. A direct path that exists but is not a file is still
+/// returned so opening it fails as an error, not as "missing".
+pub fn resolve_store(p: &StatusPayload) -> Option<(PathBuf, PathBuf)> {
     let sid = p.session_id.as_deref().filter(|s| text::valid_id(s))?;
-    if let Some(cwd) = p.work_dir() {
-        let direct = store::chats_dir().join(store::project_hash(Path::new(cwd))).join(sid).join("store.db");
-        if direct.exists() {
-            return Some(direct);
-        }
-    }
-    store::store_for_agent(sid)
+    let project = p.work_dir().map(|cwd| store::project_hash(Path::new(cwd)));
+    store::candidate_cursor_dirs_from_env().into_iter().find_map(|(dir, _)| {
+        let chats = dir.join("chats");
+        let direct = project.as_ref().map(|h| chats.join(h).join(sid).join("store.db")).filter(|d| d.exists());
+        direct.or_else(|| store::store_for_agent_in(&chats, sid)).map(|s| (s, dir))
+    })
 }
 
 /// Fast path: meta → latestRootBlobId → root blob → field 5. No tree, no timeline.
@@ -125,7 +128,8 @@ pub fn run(args: Args) -> Result<i32> {
     let input = read_payload(std::io::stdin().lock())?;
     let payload = StatusPayload::parse(&input).context("status line payload is not JSON")?;
 
-    let store_path = catch_unwind(|| resolve_store(&payload)).unwrap_or(None);
+    let found = catch_unwind(|| resolve_store(&payload)).unwrap_or(None);
+    let (store_path, cursor_dir) = found.unzip();
     let mut store = None;
     let looked_up = match &store_path {
         None => Ok(Lookup::Missing),
@@ -138,7 +142,7 @@ pub fn run(args: Args) -> Result<i32> {
         .unwrap_or(Ok(Lookup::Missing)),
     };
 
-    record_session(&payload, store_path.as_deref());
+    record_session(&payload, store_path.as_deref(), cursor_dir);
 
     let details = match looked_up {
         Ok(Lookup::Details(td)) => Some(td),
@@ -250,8 +254,10 @@ fn after_render(change: Option<BandChange>) {
     }
 }
 
-/// Best effort: `<state dir>/current.json` for `ctxviz open` and the TUI.
-fn record_session(p: &StatusPayload, store: Option<&Path>) {
+/// Best effort: `<state dir>/current.json` for `ctxviz open` and the TUI,
+/// with the cursor dir the store was found in. The state dir is the resolved
+/// one even when the store came from another candidate dir.
+fn record_session(p: &StatusPayload, store: Option<&Path>, cursor_dir: Option<PathBuf>) {
     let Some(session_id) = p.session_id.clone() else { return };
     let current = CurrentSession {
         session_id,
@@ -260,8 +266,8 @@ fn record_session(p: &StatusPayload, store: Option<&Path>) {
         kitty_window_id: std::env::var("KITTY_WINDOW_ID").ok().filter(|s| !s.is_empty()),
         model: p.model_name().map(str::to_string),
         ts: CurrentSession::now_ts(),
-        cursor_dir: None,
-        ctxviz_version: None,
+        cursor_dir,
+        ctxviz_version: Some(crate::build_info::VERSION.to_string()),
     };
     let _ = catch_unwind(|| current.write());
 }
