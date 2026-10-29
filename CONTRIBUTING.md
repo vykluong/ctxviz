@@ -37,7 +37,7 @@ To create a local fixture from one of your own stores:
 
 ```sh
 cd ctxviz
-scripts/make-fixture.sh ~/.cursor/chats/<md5(cwd)>/<agentId>/store.db
+scripts/make-fixture.sh ~/.cursor/chats/<md5(cwd)>/<agentId>/store.db   # or under your CTXVIZ_CURSOR_DIR
 ```
 
 The golden test is skipped when no fixture exists, so `cargo test` passes on a fresh clone. If a bug only reproduces with a particular store, describe its shape (for example the `ctxviz doctor` field dump with text removed) instead of sharing the file.
@@ -55,6 +55,22 @@ chore: privacy scrub of docs and sources; add text sanitizer module
 ```
 
 Common types are `feat`, `fix`, `docs`, `refactor`, `test`, and `chore`. Common scopes are `statusline`, `tui`, and `open`.
+
+## Versioning and releases
+
+ctxviz follows [Semantic Versioning](https://semver.org/). Before 1.0, new functionality bumps the minor version and fixes bump the patch version.
+
+- **Pre-releases on branches.** A branch that changes behavior sets a pre-release version, `X.Y.Z-rc.N` (for example `0.2.0-rc.1`), and increments `N` for each later candidate.
+- **One commit per version change.** Bump `version` in `ctxviz/Cargo.toml`, commit the updated `Cargo.lock`, and add the `## [X.Y.Z-rc.N] - YYYY-MM-DD` heading to `CHANGELOG.md`, all in the same commit.
+- **GA on `main`.** After the branch merges, a `chore(release): X.Y.Z` commit on `main` drops the pre-release suffix and dates the `## [X.Y.Z]` heading. Tag that commit `vX.Y.Z`.
+
+CI enforces these rules:
+
+- `cargo clippy` and `cargo test` run with `--locked`, so a `Cargo.lock` that disagrees with `Cargo.toml` fails the build.
+- A version job requires a `## [<version>]` heading in `CHANGELOG.md` for the version in `Cargo.toml`.
+- On a tag push, the tag without its leading `v` must equal that version.
+
+`ctxviz --version` prints the version and the commit it was built from, for example `ctxviz 0.2.0-rc.1 (975a453abc)`, with `-dirty` when tracked files had uncommitted changes and `(unknown)` when built without git.
 
 ## Pull requests
 

@@ -7,7 +7,8 @@
 //! Roots without token details (field 5) are skipped.
 //!
 //! The cache lives at `<state dir>/<agentId>.json`, where the state dir is
-//! `$CTXVIZ_STATE_DIR` or `<cursor dir>/ctxviz` (see [`session::state_dir`]).
+//! `$CTXVIZ_STATE_DIR` or `<cursor dir>/ctxviz` (see [`session::state_dir`]),
+//! with the cursor dir resolved by [`crate::store::try_cursor_dir`].
 //! Agent ids come from the store, so ids that are not [`text::valid_id`] map
 //! to a hashed name instead (see [`cache_path`]). Deleting the file resets it.
 

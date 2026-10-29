@@ -19,7 +19,9 @@ For development, `cargo build --release` in `ctxviz/` builds
 ## Status line
 
 Point the Cursor CLI at the binary in `cli-config.json` in its config dir
-(`$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`):
+(`$CURSOR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/cursor`, else `~/.cursor`).
+`ctxviz doctor` reports the dir ctxviz resolves (`$CTXVIZ_CURSOR_DIR` wins
+when set) and confirms the `statusLine` points at this binary:
 
 ```json
 "statusLine": {
@@ -73,8 +75,15 @@ Options:
   `--depth N`, `--interval` seconds, default 0.5, floor 0.1,
   `--theme`/`--theme-file`). Both color only on a terminal unless a theme is
   passed explicitly.
-- `doctor`: diagnose the store layout and dump the latest root's field tree
-  (`--depth N`, default 4; `--repeat N` entries per repeated field, default 3).
+- `doctor`: check the setup, then diagnose the store layout and dump the
+  latest root's field tree (`--depth N`, default 4; `--repeat N` entries per
+  repeated field, default 3). The setup lines are `OK:`, `INFO:`, or `WARN:`
+  and cover the version and build, the dirs and the four env vars
+  (`CTXVIZ_CURSOR_DIR`, `CURSOR_CONFIG_DIR`, `XDG_CONFIG_HOME`,
+  `CTXVIZ_STATE_DIR`), the `statusLine` in `<cursor dir>/cli-config.json` and
+  in the other candidate dirs, chats, `current.json`, stale temp files, and
+  Kitty. Without a store it prints `INFO: no store`. Exits 1 only when a
+  `WARN:` line was printed. Read-only.
 - `notify-test`: fire a threshold notification and tab color for testing
   (`--percent N`, default 85, `--theme`/`--theme-file`).
 
@@ -88,13 +97,20 @@ file is still opened directly.
 ## State files
 
 All state lives in one state dir: `$CTXVIZ_STATE_DIR` when set and non-empty,
-else `ctxviz/` in the Cursor config dir (`~/.cursor/ctxviz` by default). Chats
-are read from `chats/` in the same config dir. The variable moves every file below. New directories
-are created with mode 0700 and files with mode 0600.
+else `ctxviz/` in the cursor dir (`~/.cursor/ctxviz` by default). The cursor
+dir is `$CTXVIZ_CURSOR_DIR`, else `$CURSOR_CONFIG_DIR`, else
+`$XDG_CONFIG_HOME/cursor`, else `~/.cursor` (blank counts as unset, relative
+is an error); chats are read from `chats/` in it. `CTXVIZ_STATE_DIR` moves
+every file below. New directories are created with mode 0700 and files with
+mode 0600.
 
 - `<state dir>/current.json`: the session the status line last saw
-  (session id, store path, cwd, Kitty window id, model). Used by `open` and
-  the TUI.
+  (session id, store path, cwd, Kitty window id, model, `cursor_dir` where
+  the store was found, and `ctxviz_version`; the last two are absent in older
+  files). Used by `open` and the TUI. Written by atomic rename without fsync.
+  The status line searches every candidate cursor dir for the session's
+  store, so `cursor_dir` can differ from the dir the shell resolves;
+  `doctor` warns when it does.
 - `<state dir>/tui.json`: TUI layout remembered across runs (the
   explorer width set with `[`/`]`). `--split` overrides it; a missing or
   corrupt file is ignored.
@@ -107,6 +123,11 @@ are created with mode 0700 and files with mode 0600.
 - `<state dir>/<agentId>.json`: timeline cache (checkpoints, scan rowid, last
   notified band); an invalid id maps to `invalid-<md5>.json`. Deleting the
   file resets it; it is rebuilt on the next scan.
+- `<state dir>/.<name>.tmp.*`: temp files of an interrupted atomic write.
+  `ctxviz tui` removes those older than one hour when it starts.
+
+`ctxviz open` passes `CTXVIZ_CURSOR_DIR` and `CTXVIZ_STATE_DIR` to the Kitty
+split with `--env`, since Kitty starts the split with its own environment.
 
 Outside the state dir, opening a WAL-mode chat store read-only still makes
 SQLite create `store.db-wal` and `store.db-shm` next to it when they are

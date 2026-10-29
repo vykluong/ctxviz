@@ -1,8 +1,15 @@
 //! `<state dir>/current.json`: the session the status line last saw, so
 //! `ctxviz open` and an unpinned TUI can follow it.
 //!
-//! Also owns the state dir (`$CTXVIZ_STATE_DIR` or `<cursor dir>/ctxviz`) and the
-//! hardened atomic writer every state file goes through.
+//! `current.json` also records `cursor_dir`, the Cursor CLI config dir the
+//! status line found the store in (it searches every candidate dir, so this
+//! can differ from the dir the shell resolves), and `ctxviz_version`, the
+//! binary that wrote it. It is written by rename without fsync.
+//!
+//! Also owns the state dir (`$CTXVIZ_STATE_DIR` or `<cursor dir>/ctxviz`, where
+//! the cursor dir is resolved by [`crate::store::try_cursor_dir`], honoring
+//! `$CTXVIZ_CURSOR_DIR` first), the hardened atomic writer every state file
+//! goes through, and the sweep of stale temp files.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
