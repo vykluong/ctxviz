@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use ctxviz::commands;
 
 #[derive(Parser)]
-#[command(name = "ctxviz", version, about = "Live context visualizer for Cursor CLI sessions")]
+#[command(name = "ctxviz", version = ctxviz::build_info::LONG,about = "Live context visualizer for Cursor CLI sessions")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
