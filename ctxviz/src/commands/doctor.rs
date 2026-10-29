@@ -270,11 +270,15 @@ fn other_candidates(l: &mut Lines, s: &Setup, dir: &Path) -> std::io::Result<()>
             continue;
         }
         if current_in(&other_state).is_some_and(|cur| here_ts.is_none_or(|t| cur.ts > t)) {
+            let o = other.display();
+            let r = dir.display();
+            let than = match here_ts {
+                Some(_) => format!("is newer than {r}/ctxviz/current.json"),
+                None => format!("exists and {r} has none"),
+            };
             l.warn(&format!(
-                "{}/current.json is newer: the status line is running under {o}; \
-                 export CTXVIZ_CURSOR_DIR={o} or add the statusLine there",
-                other_state.display(),
-                o = other.display()
+                "{o}/ctxviz/current.json {than}: if agent runs under {o}, export CTXVIZ_CURSOR_DIR={o}; \
+                 if it is stale, start agent once under {r} and it will be superseded"
             ))?;
         }
     }
@@ -708,9 +712,26 @@ mod tests {
         current(&other, CurrentSession::now_ts(), Some(build_info::VERSION)).write_to(&there).unwrap();
         let (warns, text) = run_setup(&s);
         assert_eq!(warns, 1, "{text}");
-        assert!(text.contains(&format!("the status line is running under {}", other.display())), "{text}");
-        let hint = format!("export CTXVIZ_CURSOR_DIR={} or add the statusLine there", other.display());
-        assert!(text.contains(&hint), "{text}");
+        let want = format!(
+            "WARN: {o}/ctxviz/current.json is newer than {r}/ctxviz/current.json: \
+             if agent runs under {o}, export CTXVIZ_CURSOR_DIR={o}; \
+             if it is stale, start agent once under {r} and it will be superseded",
+            o = other.display(),
+            r = dir.display()
+        );
+        assert!(text.contains(&want), "{text}");
+
+        // No current.json here at all.
+        std::fs::remove_file(&here).unwrap();
+        let (warns, text) = run_setup(&s);
+        assert_eq!(warns, 1, "{text}");
+        let want = format!(
+            "WARN: {o}/ctxviz/current.json exists and {r} has none: if agent runs under {o}",
+            o = other.display(),
+            r = dir.display()
+        );
+        assert!(text.contains(&want), "{text}");
+        current(&dir, CurrentSession::now_ts() - 100, Some(build_info::VERSION)).write_to(&here).unwrap();
 
         // An older one is fine.
         current(&other, CurrentSession::now_ts() - 1000, Some(build_info::VERSION)).write_to(&there).unwrap();

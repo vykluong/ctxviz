@@ -74,9 +74,9 @@ Point the Cursor CLI at the binary. Run `ctxviz doctor` and note the `cursor dir
 
 ```json
 "statusLine": {
-  "type": "command",
   "command": "/Users/<you>/.cargo/bin/ctxviz statusline",
-  "padding": 2
+  "padding": 2,
+  "type": "command"
 }
 ```
 
@@ -301,11 +301,11 @@ Doctor first checks the setup. Each line starts with a level:
 It checks, in order:
 
 - **Version and environment.** The ctxviz version and commit, and `CTXVIZ_CURSOR_DIR`, `CURSOR_CONFIG_DIR`, `XDG_CONFIG_HOME`, and `CTXVIZ_STATE_DIR` as doctor sees them (`-` when unset).
-- **Dirs.** The resolved cursor dir and the variable that chose it, and the state dir.
+- **Dirs.** The resolved cursor dir and the variable that chose it, as `cursor dir: <path> (from $CURSOR_CONFIG_DIR)`, and the state dir.
 - **Status line wiring.** `<cursor dir>/cli-config.json`: a `WARN:` when the file is missing, when it has no `statusLine` block (the line prints the block to add), when `statusLine.type` is not `"command"`, or when the command does not point at this ctxviz binary (both paths are printed).
-- **Other candidate dirs.** A `WARN:` when the status line is configured in another candidate dir's `cli-config.json` but not in the resolved one, or when another candidate dir has a newer `current.json` (the status line is running there; the line suggests the `export CTXVIZ_CURSOR_DIR=...` that fixes it).
+- **Other candidate dirs.** Each is listed as `other cursor dir: <path> (from <variable>)`. A `WARN:` when the status line is configured in another candidate dir's `cli-config.json` but not in the resolved one, or when another candidate dir has a `current.json` newer than the resolved dir's (or the resolved dir has none). That can mean the agent runs under the other dir, so the line suggests `export CTXVIZ_CURSOR_DIR=<other>`. It can also mean the other file is stale, for example left by the desktop app; then starting `agent` once under the resolved dir supersedes it.
 - **Chats.** The number of projects and stores under `<cursor dir>/chats` and the age of the newest store. When there is no store yet, an `INFO:` line explains that no chat has a checkpoint yet: send one message in `agent`.
-- **`current.json`.** The session id, its age, and whether its store exists. A `WARN:` when the `cursor_dir` it records differs from the resolved dir, or when the `ctxviz_version` it records differs from this binary, each with the suggested fix.
+- **`current.json`.** The session id, its age, and whether its store exists, or an `INFO:` when the state dir has no `current.json` yet. A `WARN:` when the `cursor_dir` it records differs from the resolved dir, or when the `ctxviz_version` it records differs from this binary, each with the suggested fix.
 - **Stale temp files** in the state dir, as `INFO:` (`ctxviz tui` removes them when it starts).
 - **Kitty.** `OK:` inside Kitty, `INFO:` otherwise (`ctxviz open` needs Kitty).
 
@@ -370,7 +370,7 @@ alias agent='CURSOR_CONFIG_DIR=$CURSOR_CLI_CONFIG_DIR CURSOR_DATA_DIR=$CURSOR_CL
    ```
 
    `ctxviz open` then hands the dir on to the TUI split itself.
-4. Open a new login shell and run `ctxviz doctor`. It should report the CLI dir as the cursor dir, chosen by `$CTXVIZ_CURSOR_DIR`, with an `OK:` status line check, and exit 0.
+4. Open a new login shell, start `agent` and send one message, then run `ctxviz doctor`. It should print `cursor dir: /Users/you/cursor-cli/.cursor (from $CTXVIZ_CURSOR_DIR)` and an `OK:` status line check, and exit 0. Before the agent has run under the CLI dir, doctor warns that `~/.cursor/ctxviz/current.json` exists and the CLI dir has none; that warning goes away once the status line writes its own `current.json`.
 
 ## Files ctxviz writes
 

@@ -25,9 +25,9 @@ when set) and confirms the `statusLine` points at this binary:
 
 ```json
 "statusLine": {
-  "type": "command",
   "command": "/Users/<you>/.cargo/bin/ctxviz statusline",
-  "padding": 2
+  "padding": 2,
+  "type": "command"
 }
 ```
 

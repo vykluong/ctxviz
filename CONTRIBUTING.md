@@ -19,8 +19,8 @@ Run all of these before opening a pull request. CI runs the same set.
 
 ```sh
 cd ctxviz
-cargo test
-cargo clippy --all-targets -- -D warnings
+cargo test --all-targets --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo fmt --check
 cargo deny check
 ```
